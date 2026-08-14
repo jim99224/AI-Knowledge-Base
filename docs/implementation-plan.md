@@ -623,3 +623,652 @@ FastAPI / MCP / Agent
 ```
 
 This keeps the initial implementation simple while preserving the ability to replace either database and expose the same knowledge capability to future Agents and MCP clients.
+
+## 19. Repository-Scoped Indexing Modes
+
+All indexing operations use a repository as the smallest isolation unit. A job for one repository must not block or mutate any other repository.
+
+Supported modes:
+
+| Mode | Trigger | Behavior |
+| --- | --- | --- |
+| `incremental` | GitHub webhook or frequent Git sync | Process only added, modified, deleted, and renamed files between two commits |
+| `full_reconcile` | Monthly schedule or detected drift | Scan the complete current repository, reuse unchanged content, and repair MongoDB/Vector DB drift |
+| `full_rebuild` | Parser, chunking, graph schema, embedding model, or dimension change | Build new content, vector, or graph generations and activate them after validation |
+
+### 19.1 Incremental Indexing
+
+Git sync produces a working tree at a target commit. The indexer determines changes with:
+
+```bash
+git diff --name-status --find-renames <last_indexed_commit>..<target_commit>
+```
+
+Operations:
+
+- `A`: parse, chunk, embed, and insert;
+- `M`: compare content hashes and update only changed entities/chunks;
+- `D`: deactivate MongoDB documents and delete their vectors and graph evidence;
+- `R`: update paths and avoid re-embedding when content is unchanged.
+
+`last_indexed_commit` is updated only after the complete job succeeds.
+
+### 19.2 Monthly Full Reconcile
+
+Full reconcile scans every supported path at a fixed target commit and builds a manifest:
+
+```text
+path -> content hash + commit SHA + parser version + extractor version
+```
+
+Reconciliation rules:
+
+- Git file exists and MongoDB document is missing: create it;
+- content hash changed: reparse and reindex it;
+- content hash unchanged and parser/extractor versions match: reuse extraction results;
+- MongoDB document exists but Git file is missing: deactivate it and remove vectors/graph evidence;
+- vector state is missing or failed: repair it;
+- graph relationships are unresolved or dangling: rerun the affected linker.
+
+Monthly full reconcile does not re-embed unchanged content.
+
+### 19.3 Full Rebuild
+
+Full rebuild creates shadow generations instead of deleting active data first:
+
+```text
+build new generation
+-> validate counts, retrieval, and graph integrity
+-> atomically update repository active generation
+-> retain old generation for rollback
+-> clean up asynchronously
+```
+
+Automatic fallback to reconcile or rebuild occurs when:
+
+- no previous indexed commit exists;
+- the previous commit is missing or is no longer an ancestor because of force-push/rebase;
+- the default branch changes;
+- parser, extractor, chunking, graph schema, embedding model, or dimension changes;
+- MongoDB and Vector DB drift exceeds an accepted threshold.
+
+### 19.4 Monthly Kubernetes Schedule
+
+Create one job per enabled repository rather than one large job for all repositories. This provides independent retries, progress, and failure isolation.
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: knowledge-base-full-reconcile
+spec:
+  schedule: "0 2 1 * *"
+  timeZone: "Asia/Taipei"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: scheduler
+              image: ai-knowledge-base:latest
+              args:
+                - python
+                - -m
+                - apps.worker.schedule_reconcile
+                - --all-enabled-repositories
+```
+
+Each repository uses a separate distributed lock:
+
+```text
+knowledge-base:index:{repository_id}
+knowledge-base:graph:{repository_id}
+```
+
+Different repositories may run concurrently. Jobs for the same repository must be serialized.
+
+## 20. Repository Registry and Lifecycle
+
+The `repositories` collection is the control plane for onboarding, search, indexing, rebuild, deactivation, and purge.
+
+Additional repository fields:
+
+```json
+{
+  "status": "onboarding | active | inactive | purge_pending | purged | failed",
+  "indexing_enabled": true,
+  "search_enabled": true,
+  "last_indexed_commit": "abc123",
+  "last_full_scan_commit": "abc123",
+  "last_full_scan_at": "datetime",
+  "active_content_generation": "content-v3",
+  "active_embedding_generation": "embedding-v2",
+  "active_graph_generation": "graph-v7",
+  "collection_strategy": "shared | dedicated | partitioned"
+}
+```
+
+### 20.1 Add Repository
+
+```text
+register repository
+-> verify access and default branch
+-> status = onboarding
+-> run initial full reconcile
+-> validate text/vector/graph outputs
+-> status = active
+-> enable webhook/incremental indexing
+```
+
+The repository is excluded from production search until onboarding validation succeeds.
+
+### 20.2 Remove Repository
+
+Removal from the knowledge base never deletes the upstream GitHub repository.
+
+Two-phase removal:
+
+1. Deactivate immediately: stop indexing and exclude the repository from all searches.
+2. Purge asynchronously after an optional grace period: remove vectors, chunks, documents, entities, and edges while retaining a minimal audit record.
+
+```text
+POST   /v1/repositories/{repository_id}/deactivate
+POST   /v1/repositories/{repository_id}/activate
+DELETE /v1/repositories/{repository_id}?purge=true
+```
+
+## 21. Hybrid Vector Collection Strategy
+
+Do not require every repository to use the same physical layout.
+
+### 21.1 Shared Collections
+
+Use for normal repositories with compatible permissions and the same embedding model/version:
+
+```text
+knowledge_shared_embedding_v1
+  repository_id = repo-a
+  repository_id = repo-b
+  repository_id = repo-c
+```
+
+Every vector record includes `repository_id`, generation, document ID, commit, and authorization metadata.
+
+### 21.2 Dedicated Collections
+
+Use for large legacy repositories, strict isolation, custom index parameters, or different embedding models:
+
+```text
+knowledge_legacy_erp_embedding_v1
+```
+
+### 21.3 Partitioned Collections
+
+Very large repositories may be partitioned by meaningful module boundaries:
+
+```text
+knowledge_legacy_erp_backend_v1
+knowledge_legacy_erp_database_v1
+knowledge_legacy_erp_batch_v1
+knowledge_legacy_erp_docs_v1
+```
+
+Partition by service, module, top-level path, language, or document type. Do not split only by an arbitrary file count.
+
+### 21.4 Collection Registry
+
+MongoDB resolves a logical repository to physical collections:
+
+```json
+{
+  "repository_id": "legacy-erp",
+  "strategy": "partitioned",
+  "embedding_model": "text-embedding-model",
+  "active_generation": "embedding-v3",
+  "collections": [
+    {
+      "name": "knowledge_legacy_erp_backend_v3",
+      "partition_key": "backend",
+      "path_patterns": ["backend/**"]
+    },
+    {
+      "name": "knowledge_legacy_erp_database_v3",
+      "partition_key": "database",
+      "path_patterns": ["database/**", "sql/**"]
+    }
+  ]
+}
+```
+
+## 22. Cross-Repository Search
+
+Searching every collection for every query does not scale. Use two-stage retrieval.
+
+```mermaid
+flowchart TD
+    A[Query] --> B[Authorization filter]
+    B --> C[Repository catalog search]
+    C --> D[Candidate repositories and modules]
+    D --> E[Resolve shared/dedicated/partitioned targets]
+    E --> F[Bounded parallel searches]
+    F --> G[Rank fusion and deduplication]
+    G --> H[MongoDB batch fetch]
+    H --> I[General LLM]
+```
+
+### 22.1 Repository Catalog
+
+Maintain a small catalog index containing repository/module summaries, README topics, languages, frameworks, owners, services, paths, aliases, and authorization metadata. Global queries search this catalog first and select a bounded number of repository targets.
+
+When the user explicitly specifies repositories, skip catalog routing and search only those targets.
+
+### 22.2 Parallel Search
+
+Use bounded concurrency to protect the Vector DB. Each target returns local Top-K results. Do not compare raw scores blindly across collections with different models or index configurations.
+
+Prefer compatible models and metrics within one search group. Merge results using rank-based fusion such as Reciprocal Rank Fusion, then apply repository-routing confidence, deduplication, and an optional reranker.
+
+### 22.3 Large File Policy
+
+Large legacy files are not embedded as one document. Apply structured or streaming parsing:
+
+| File | Strategy |
+| --- | --- |
+| Large SQL | procedure, statement, DDL object, or table block |
+| Large YAML/XML | resource, top-level key, or element subtree |
+| Source code | class/function/method |
+| Large plain text | bounded streaming chunks |
+| Generated/vendor/minified/binary | exclude by policy |
+
+Use hierarchical indexing for large repositories:
+
+```text
+repository summary
+-> module summary
+-> file summary
+-> code/text chunks
+```
+
+## 23. Code Intelligence and AST Pipeline
+
+Document RAG alone cannot reliably answer code-lineage questions. Add a deterministic code-intelligence pipeline.
+
+AST means Abstract Syntax Tree: a parser converts source text into structured nodes such as classes, functions, decorators, calls, arguments, and literals. AST extraction is deterministic and is not an AI model.
+
+```mermaid
+flowchart LR
+    A[File] --> B[Classifier]
+    B --> C[Parser]
+    C --> D[Shared AST or IR]
+    D --> E[Extractor planner]
+    E --> F[Relevant extractors]
+    F --> G[Entities and unresolved relations]
+    G --> H[Local/cross-file/cross-repo linkers]
+```
+
+### 23.1 Extractor Selection
+
+Twenty registered extractors do not mean twenty file reads or parses.
+
+```text
+read once
+-> classify once
+-> parse once
+-> traverse shared AST/IR once when practical
+-> dispatch relevant nodes to applicable extractors
+```
+
+Examples:
+
+| File | Applicable extractors |
+| --- | --- |
+| React TSX | function, component, UI element, event handler, HTTP client |
+| FastAPI Python | route, class, function, call, ORM/SQL |
+| SQL | query, procedure, table reference |
+| Kubernetes YAML | ingress, service, deployment, config, data source |
+| Markdown | document metadata and links |
+
+The planner considers repository profile, file type, framework imports, AST features, and configuration markers.
+
+### 23.2 Parse and Extraction Cache
+
+Cache key:
+
+```text
+repository_id
++ path
++ content_hash
++ parser_version
++ extractor_version
+```
+
+Monthly full scans reuse cached results when content and versions are unchanged.
+
+### 23.3 Extractors and Linkers
+
+Initial extractor families:
+
+```text
+RouteExtractor
+ClassExtractor
+FunctionExtractor
+UIComponentExtractor
+UIElementExtractor
+EventHandlerExtractor
+HttpClientCallExtractor
+ImportExtractor
+FunctionCallExtractor
+RawSQLExtractor
+ORMExtractor
+StoredProcedureExtractor
+DataSourceExtractor
+ConfigurationExtractor
+IngressExtractor
+DeploymentExtractor
+```
+
+Extractors create facts and unresolved references. Linkers resolve symbols and create graph edges. This separation avoids embedding framework-specific assumptions in the graph store.
+
+## 24. Entity Graph and Lineage Store
+
+Add a replaceable `LineageStore` port. The MVP may use MongoDB; a graph database can be introduced later without changing FastAPI, MCP, Agent, or application-service contracts.
+
+```python
+class LineageStore(Protocol):
+    async def upsert_entities(self, entities: list[object]) -> None: ...
+    async def upsert_edges(self, edges: list[object]) -> None: ...
+    async def delete_file_graph(
+        self,
+        repository_id: str,
+        path: str,
+    ) -> None: ...
+    async def traverse(
+        self,
+        start_entity_ids: list[str],
+        direction: str,
+        target_types: set[str],
+        allowed_edge_types: set[str],
+        max_depth: int,
+    ) -> list[object]: ...
+```
+
+### 24.1 Stable Entity Keys and Versioned Entities
+
+Separate logical identity from a commit-specific location:
+
+```text
+API endpoint:
+api_endpoint:{service}:{method}:{normalized_path}
+
+Function:
+function:{repository}:{module}:{qualified_name}
+
+UI element:
+ui_element:{repository}:{route}:{component}:{selector_or_text}
+
+SQL:
+sql:{repository}:{normalized_sql_hash}
+
+Data source:
+data_source:{environment}:{service}:{database_name}
+```
+
+Entity versions contain repository, graph generation, commit, path, line range, extractor, and evidence.
+
+### 24.2 Edge Types
+
+```text
+RENDERS
+CONTAINS
+TRIGGERS
+CALLS_API
+ROUTES_TO
+HANDLED_BY
+CALLS
+INVOKES
+EXECUTES
+CALLS_PROCEDURE
+READS_FROM
+WRITES_TO
+ACCESSES
+CONFIGURED_BY
+RESOLVED_FROM
+DEPLOYED_AS
+```
+
+Every edge records resolution type, confidence, commit, repository, generation, and source evidence.
+
+Confidence classes:
+
+```text
+verified_runtime
+verified_static
+config_resolved
+naming_heuristic
+embedding_match
+llm_inferred
+unknown
+```
+
+LLM-inferred edges are never equivalent to AST/config/runtime-verified edges.
+
+## 25. UI/API-to-Database Lineage
+
+The target lineage is:
+
+```text
+URL
+-> frontend route
+-> page/component
+-> button/UI element
+-> event handler
+-> HTTP request
+-> gateway/ingress rewrite
+-> backend API endpoint
+-> controller
+-> service
+-> repository/DAO
+-> raw SQL/ORM/stored procedure
+-> database/table
+-> connection configuration
+-> ConfigMap/Secret reference
+```
+
+Vector search discovers candidates. The Entity Graph establishes verifiable relationships. The LLM explains retrieved evidence but does not invent missing hops.
+
+### 25.1 Start from Any Entity
+
+Users do not need to start from the UI. A known endpoint may be used directly:
+
+```text
+POST /api/orders/search
+-> handler
+-> service
+-> repository
+-> SQL
+-> data source
+-> connection configuration
+```
+
+Generic trace request:
+
+```json
+{
+  "start": {
+    "entity_type": "api_endpoint",
+    "http_method": "POST",
+    "path": "/api/orders/search",
+    "service": "order-service",
+    "environment": "production"
+  },
+  "direction": "downstream",
+  "target_types": [
+    "sql_query",
+    "stored_procedure",
+    "data_source",
+    "connection_config"
+  ],
+  "max_depth": 10
+}
+```
+
+Traversal supports:
+
+- downstream: API to SQL/database;
+- upstream: table/database to APIs/pages;
+- both: full impact analysis.
+
+Traversal requires cycle detection, maximum depth, maximum result count, timeout, edge allowlists, active-generation filtering, and repository/environment authorization.
+
+### 25.2 Ambiguous and Branching Results
+
+Endpoint identity should include method, path, service/host, environment, and deployed version when available. If multiple endpoints match, return candidates rather than guessing.
+
+One endpoint may use multiple databases or queries based on runtime conditions. Preserve all paths and annotate conditions, confidence, evidence, and unknowns.
+
+### 25.3 SQL Semantics
+
+- Raw SQL: return the normalized SQL template and evidence.
+- ORM: return the ORM expression and confirmed tables; do not fabricate compiled SQL.
+- Stored procedure: return the procedure name and definition when indexed.
+- Dynamic SQL: return confirmed fragments and mark the result partial.
+
+### 25.4 Connection Security
+
+Never index or return database passwords. Return a masked connection description and the configuration reference:
+
+```text
+Database type: PostgreSQL
+Host: orders-db.prod.svc
+Port: 5432
+Database: orders
+Variable: ORDERS_DATABASE_URL
+Secret reference: order-system/order-db-secret#DATABASE_URL
+Masked URI: postgresql://***:***@orders-db.prod.svc:5432/orders
+```
+
+Authorization applies before traversal, retrieval, and evidence fetch. Log access without logging credentials or unnecessary sensitive data.
+
+### 25.5 Static-First, Runtime-Assisted
+
+Static analysis may be insufficient for dynamic URLs, feature flags, dependency injection, gateway rewrites, dynamic SQL, ORM compilation, and deployment drift. Optional runtime evidence may include browser/network traces, API gateway logs, OpenTelemetry spans, application spans, and database audit records.
+
+Runtime evidence validates the production path; static analysis remains the baseline graph.
+
+## 26. Entity Graph Full Scan and Incremental Update
+
+### 26.1 Full Graph Scan
+
+Use shadow graph generations:
+
+```mermaid
+flowchart TD
+    A[Pin repository HEAD commit] --> B[Create shadow graph generation]
+    B --> C[Parse all supported files]
+    C --> D[Extract entities]
+    D --> E[Resolve local and cross-repo edges]
+    E --> F[Validate graph]
+    F -->|Pass| G[Activate generation]
+    F -->|Fail| H[Keep previous generation]
+    G --> I[Clean old generation asynchronously]
+```
+
+Graph validation includes:
+
+- duplicate stable keys;
+- dangling source/target references;
+- incompatible entity/edge types;
+- unexpected entity-count drops;
+- unresolved-symbol and inferred-edge ratios;
+- route-to-handler and query-to-data-source coverage;
+- sampled API-to-database paths;
+- repository/commit/path evidence validity.
+
+### 26.2 Incremental Graph Update
+
+For changed files:
+
+1. identify entities previously produced from the file;
+2. remove or deactivate edges whose evidence came from the old file version;
+3. parse the new file once;
+4. extract new entities and unresolved references;
+5. relink impacted neighboring symbols;
+6. enqueue cross-repo link resolution when exported routes or symbols change.
+
+Stable entity keys prevent unaffected cross-repo references from depending on physical version IDs.
+
+## 27. Model Requirements
+
+No additional model is required for the first Entity Graph implementation.
+
+| Capability | Primary mechanism |
+| --- | --- |
+| Function/class/route extraction | AST and framework extractors |
+| YAML/JSON/deployment extraction | deterministic parsers |
+| SQL/table/procedure extraction | SQL parser and ORM extractors |
+| Symbol/call resolution | symbol tables, import resolution, and rule-based linkers |
+| Candidate document/entity discovery | existing text embedding model |
+| Natural-language query planning and explanation | existing general LLM |
+
+Optional later additions must be justified by evaluation:
+
+- code embedding model when the current embedding model has poor code/API/SQL Recall@K;
+- reranker when cross-repository candidate ranking is weak;
+- specialized code model for unfamiliar frameworks or complex dynamic code.
+
+Any model-generated relationship is a candidate edge marked `llm_inferred` until static or runtime evidence verifies it.
+
+## 28. Additional APIs and MCP/Agent Tools
+
+### FastAPI
+
+```text
+POST   /v1/repositories
+POST   /v1/repositories/{repository_id}/scan
+POST   /v1/repositories/{repository_id}/deactivate
+POST   /v1/repositories/{repository_id}/activate
+DELETE /v1/repositories/{repository_id}?purge=true
+
+POST   /v1/lineage/resolve
+POST   /v1/lineage/trace
+POST   /v1/lineage/ui-to-database
+GET    /v1/entities/{entity_id}
+GET    /v1/evidence/{evidence_id}
+```
+
+### MCP/Agent Read-Only Tools
+
+```text
+search
+fetch
+list_repositories
+get_index_status
+resolve_url
+find_ui_element
+trace_ui_action
+trace_api_route
+trace_to_database
+get_sql_lineage
+get_data_source
+fetch_evidence
+```
+
+These adapters call application services and never access MongoDB, the Vector DB, or the Lineage Store directly.
+
+## 29. Revised Delivery Sequence
+
+1. Implement repository registry, model/storage ports, MongoDB, and in-memory vector adapter.
+2. Implement repository-scoped incremental and monthly full-reconcile workflows.
+3. Implement Markdown/text retrieval and grounded answers.
+4. Inventory actual languages, frameworks, deployment formats, and legacy file patterns.
+5. Build a single-stack lineage proof of concept, for example React -> HTTP -> FastAPI -> service -> SQLAlchemy/raw SQL -> PostgreSQL.
+6. Add AST/IR parsing, extractor planning, caching, and deterministic entity/edge extraction.
+7. Add shadow graph generations, validation, and incremental graph updates.
+8. Add repository catalog routing and hybrid shared/dedicated/partitioned collections.
+9. Add arbitrary-node upstream/downstream lineage APIs.
+10. Add runtime evidence only where static analysis cannot provide sufficient confidence.
+11. Expose stable read-only capabilities through MCP and Agent tools.
+
+The system should progress from reliable document retrieval to evidence-backed code lineage. Agent behavior is added only after the underlying retrieval and graph contracts are stable and measurable.
