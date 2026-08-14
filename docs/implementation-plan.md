@@ -54,7 +54,7 @@ flowchart TB
 | Embedding | Existing embedding model | Yes, through `EmbeddingProvider` |
 | Generation | Existing general LLM | Yes, through `LLMProvider` |
 | Background work | Dramatiq or Celery | Yes |
-| Deployment | Docker and Kubernetes | Yes |
+| Deployment | Docker, Docker Compose, and Kubernetes | Yes |
 | Metrics | Prometheus endpoint | Yes |
 | MCP | Python MCP SDK / FastMCP | Yes |
 
@@ -435,6 +435,33 @@ GENERAL_LLM_MODEL_ID=general-llm
 
 The embedding dimension must be configuration, not a Python constant. A model change with a different dimension creates a new vector collection and index version.
 
+### 13.1 Local Docker Baseline
+
+Phase 0 provides a reproducible local test environment:
+
+```text
+Dockerfile development target
+        -> installs project and development dependencies
+        -> runs the unit-test suite
+
+docker-compose.yml
+        -> starts MongoDB with a persistent named volume
+        -> waits for MongoDB health
+        -> runs the development image tests
+```
+
+The Phase 0 container is intentionally finite: it exits when tests complete because the repository does not yet expose a long-running API or worker. The runtime image performs only a package import smoke check. Later phases replace the development command with FastAPI and worker entrypoints without changing the MongoDB service contract.
+
+Required local validation:
+
+```bash
+docker compose config
+docker compose up --build --abort-on-container-exit \
+  --exit-code-from knowledge-base
+```
+
+The Compose service uses `mongodb://mongodb:27017`; host processes use `mongodb://localhost:${MONGODB_PORT:-27017}`. Secrets remain outside the image and local `.env` files are excluded from both Git and Docker build contexts.
+
 ## 14. MCP Expansion
 
 The MCP server wraps application services and never accesses MongoDB or the Vector DB directly.
@@ -487,13 +514,15 @@ The Agent must not query database clients directly. It calls the same retrieval 
 - implement model adapters;
 - implement MongoDB connection lifecycle;
 - implement the in-memory Vector Store;
-- add unit-test infrastructure.
+- add unit-test infrastructure;
+- add a reproducible Docker development and test baseline.
 
 Acceptance criteria:
 
 - both models are callable through stable interfaces;
 - application services run with fake stores in tests;
-- no application code imports a specific vector database SDK.
+- no application code imports a specific vector database SDK;
+- the development image runs the Phase 0 test suite against a healthy MongoDB Compose service.
 
 ### Phase 1: Indexing MVP — 1 to 2 weeks
 
