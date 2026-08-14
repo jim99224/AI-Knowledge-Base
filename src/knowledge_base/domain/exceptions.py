@@ -15,3 +15,7 @@ class DimensionMismatchError(KnowledgeBaseError):
 
 class StoreNotConnectedError(KnowledgeBaseError):
     """Raised when a storage operation is attempted before connecting."""
+
+
+class FullReconcileRequired(KnowledgeBaseError):
+    """Raised when an incremental source diff cannot be trusted as complete."""

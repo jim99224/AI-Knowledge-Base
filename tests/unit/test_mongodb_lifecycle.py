@@ -34,7 +34,9 @@ async def test_mongodb_connect_ping_and_close_are_explicit() -> None:
         clients.append(client)
         return client
 
-    store = MongoDocumentStore("mongodb://test", "kb", client_factory=factory)
+    store = MongoDocumentStore(
+        "mongodb://test", "kb", client_factory=factory, ensure_indexes=False
+    )
     assert not store.connected
 
     await store.connect()

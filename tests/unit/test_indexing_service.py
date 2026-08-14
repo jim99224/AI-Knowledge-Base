@@ -5,6 +5,7 @@ from knowledge_base.adapters.models.fake import FakeEmbeddingProvider
 from knowledge_base.adapters.vector_stores.memory import InMemoryVectorStore
 from knowledge_base.application.indexing_service import IndexingService
 from knowledge_base.domain.models import Chunk, IndexStatus
+from knowledge_base.ports.vector_store import VectorRecord
 
 
 class FakeDocumentStore:
@@ -55,6 +56,15 @@ class FakeDocumentStore:
                 embedding_dimension=embedding_dimension,
             )
 
+    async def mark_chunks_failed(self, chunk_ids: Sequence[str], error: str) -> None:
+        for chunk_id in chunk_ids:
+            self.chunks[chunk_id] = replace(
+                self.chunks[chunk_id],
+                vector_status=IndexStatus.FAILED,
+                retry_count=self.chunks[chunk_id].retry_count + 1,
+                metadata={**self.chunks[chunk_id].metadata, "last_error": error},
+            )
+
 
 async def test_application_service_runs_with_fake_store() -> None:
     documents = FakeDocumentStore()
@@ -84,3 +94,46 @@ async def test_application_service_runs_with_fake_store() -> None:
     query_vector = await FakeEmbeddingProvider(4).embed_query(chunk.content)
     matches = await vectors.search("chunks", query_vector, 1)
     assert matches[0].id == "chunk-1"
+
+
+class FlakyVectorStore(InMemoryVectorStore):
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+        self.upsert_attempts = 0
+
+    async def upsert(
+        self, collection_name: str, records: Sequence[VectorRecord]
+    ) -> None:
+        self.upsert_attempts += 1
+        if self.upsert_attempts <= self.failures:
+            raise RuntimeError("temporary vector failure")
+        await super().upsert(collection_name, records)
+
+
+async def test_vector_upsert_is_retried_idempotently() -> None:
+    documents = FakeDocumentStore()
+    vectors = FlakyVectorStore(failures=2)
+    await vectors.connect()
+    service = IndexingService(
+        document_store=documents,
+        vector_store=vectors,
+        embedding_provider=FakeEmbeddingProvider(dimension=4),
+        collection_name="chunks",
+        index_version="embedding-v1",
+        retry_attempts=3,
+    )
+    chunk = Chunk(
+        id="stable-chunk",
+        document_id="doc-1",
+        repository_id="repo-1",
+        chunk_index=0,
+        content="retry safely",
+        content_hash="hash",
+        commit_sha="abc123",
+    )
+
+    await service.index_chunks([chunk])
+
+    assert vectors.upsert_attempts == 3
+    assert documents.chunks[chunk.id].vector_status is IndexStatus.INDEXED

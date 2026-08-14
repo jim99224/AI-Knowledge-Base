@@ -39,5 +39,4 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-packages = ["knowledge_base"]
-
+files = ["src", "apps"]

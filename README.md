@@ -67,3 +67,30 @@ adapters, a MongoDB document-store adapter, an in-memory vector store, fake mode
 adapters, and unit tests. It intentionally contains no production Vector DB SDK.
 The Docker artifacts are a reproducible development and test baseline; production
 API images and Kubernetes deployment remain part of later delivery phases.
+
+## Phase 1 indexing worker
+
+Phase 1 adds repository-scoped GitHub synchronization, Markdown and plain-text
+parsing, deterministic structural chunking, MongoDB persistence, batched embedding,
+idempotent vector upserts, stale-content deletion, retry state, and index jobs.
+
+Configure `.env` with the user-provided MongoDB connection, GitHub repository, and
+embedding endpoint. Leave `GITHUB_BASE_COMMIT` empty for an initial full scan. Set
+it to the last successfully indexed commit for an incremental scan.
+
+Run from the host:
+
+```bash
+python -m apps.worker.index_repository
+```
+
+Or run through Compose:
+
+```bash
+docker compose run --rm knowledge-base \
+  python -m apps.worker.index_repository
+```
+
+Until a production Vector DB is selected, the worker uses the replaceable in-memory
+adapter. MongoDB remains the canonical source for documents, chunks, and index-job
+state; a later Vector Store adapter can rebuild its index from those records.

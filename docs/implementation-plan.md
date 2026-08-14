@@ -548,6 +548,23 @@ Acceptance criteria:
 - unchanged content is not embedded again;
 - failed vector writes can be retried safely.
 
+Implementation baseline (2026-08-15):
+
+- read-only GitHub REST adapter for repository metadata, commit resolution, recursive file listing, raw file fetch, and incremental comparison;
+- automatic full-list fallback when an incremental comparison reaches the GitHub 300-file safety limit;
+- supported-file classification with generated, vendor, and binary-like path exclusion;
+- Markdown heading and plain-text chunkers with deterministic IDs, source metadata, configurable overlap, and CJK-aware token approximation;
+- MongoDB indexes plus document, chunk, deletion, failure, and index-job persistence;
+- batched embedding and idempotent Vector Store upserts with bounded exponential retry;
+- retryable jobs that retain base and target commits;
+- `.env`-configured worker entrypoint for initial or incremental repository indexing.
+
+Remaining before Phase 1 production sign-off:
+
+- select and implement the persistent production Vector Store adapter;
+- run integration tests against the user-provided MongoDB, GitHub repository, and embedding endpoint;
+- benchmark chunk sizes, embedding batch size, retry policy, and large-repository full reconcile behavior.
+
 ### Phase 2: Retrieval MVP — 1 week
 
 - query embedding;
