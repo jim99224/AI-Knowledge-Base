@@ -1,0 +1,10 @@
+services:
+  knowledge-base:
+    build:
+      context: .
+      target: development
+    init: true
+    env_file: .env
+    volumes:
+      - .:/app
+    command: ["python", "-m", "pytest"]

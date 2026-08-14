@@ -54,7 +54,7 @@ flowchart TB
 | Embedding | Existing embedding model | Yes, through `EmbeddingProvider` |
 | Generation | Existing general LLM | Yes, through `LLMProvider` |
 | Background work | Dramatiq or Celery | Yes |
-| Deployment | Docker and Kubernetes | Yes |
+| Deployment | Docker, Docker Compose, and Kubernetes | Yes |
 | Metrics | Prometheus endpoint | Yes |
 | MCP | Python MCP SDK / FastMCP | Yes |
 
@@ -435,6 +435,40 @@ GENERAL_LLM_MODEL_ID=general-llm
 
 The embedding dimension must be configuration, not a Python constant. A model change with a different dimension creates a new vector collection and index version.
 
+### 13.1 Local Docker Baseline
+
+Phase 0 provides a reproducible local test environment:
+
+```text
+Dockerfile development target
+        -> installs project and development dependencies
+        -> receives user-supplied settings from .env
+        -> runs the unit-test suite
+
+docker-compose.yml
+        -> builds the development image
+        -> passes .env variables into the container
+        -> does not provision MongoDB or other external services
+```
+
+The Phase 0 container is intentionally finite: it exits when tests complete because the repository does not yet expose a long-running API or worker. The runtime image performs only a package import smoke check. Later phases replace the development command with FastAPI and worker entrypoints.
+
+Database connection information is owned by the user or deployment environment. `MONGODB_URI` and `MONGODB_DATABASE` must be supplied in `.env`; Compose must never create a database implicitly or substitute a local database URI.
+
+The project-level `.env` is used by Compose for variable interpolation. The explicit service-level `env_file: .env` also passes all values into the container. A missing `.env` is treated as a configuration error.
+
+Required local validation:
+
+```bash
+docker compose config
+docker compose run --rm knowledge-base python -c \
+  "import os; assert os.environ.get('MONGODB_URI')"
+docker compose up --build --abort-on-container-exit \
+  --exit-code-from knowledge-base
+```
+
+The environment-presence check does not print credentials. Secrets remain outside the image, and local `.env` files are excluded from both Git and Docker build contexts.
+
 ## 14. MCP Expansion
 
 The MCP server wraps application services and never accesses MongoDB or the Vector DB directly.
@@ -487,13 +521,15 @@ The Agent must not query database clients directly. It calls the same retrieval 
 - implement model adapters;
 - implement MongoDB connection lifecycle;
 - implement the in-memory Vector Store;
-- add unit-test infrastructure.
+- add unit-test infrastructure;
+- add a reproducible Docker development and test baseline.
 
 Acceptance criteria:
 
 - both models are callable through stable interfaces;
 - application services run with fake stores in tests;
-- no application code imports a specific vector database SDK.
+- no application code imports a specific vector database SDK;
+- the development image receives user-supplied connection settings through a required `.env` file without provisioning a database.
 
 ### Phase 1: Indexing MVP — 1 to 2 weeks
 
