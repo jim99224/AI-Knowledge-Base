@@ -442,25 +442,32 @@ Phase 0 provides a reproducible local test environment:
 ```text
 Dockerfile development target
         -> installs project and development dependencies
+        -> receives user-supplied settings from .env
         -> runs the unit-test suite
 
 docker-compose.yml
-        -> starts MongoDB with a persistent named volume
-        -> waits for MongoDB health
-        -> runs the development image tests
+        -> builds the development image
+        -> passes .env variables into the container
+        -> does not provision MongoDB or other external services
 ```
 
-The Phase 0 container is intentionally finite: it exits when tests complete because the repository does not yet expose a long-running API or worker. The runtime image performs only a package import smoke check. Later phases replace the development command with FastAPI and worker entrypoints without changing the MongoDB service contract.
+The Phase 0 container is intentionally finite: it exits when tests complete because the repository does not yet expose a long-running API or worker. The runtime image performs only a package import smoke check. Later phases replace the development command with FastAPI and worker entrypoints.
+
+Database connection information is owned by the user or deployment environment. `MONGODB_URI` and `MONGODB_DATABASE` must be supplied in `.env`; Compose must never create a database implicitly or substitute a local database URI.
+
+The project-level `.env` is used by Compose for variable interpolation. The explicit service-level `env_file: .env` also passes all values into the container. A missing `.env` is treated as a configuration error.
 
 Required local validation:
 
 ```bash
 docker compose config
+docker compose run --rm knowledge-base python -c \
+  "import os; assert os.environ.get('MONGODB_URI')"
 docker compose up --build --abort-on-container-exit \
   --exit-code-from knowledge-base
 ```
 
-The Compose service uses `mongodb://mongodb:27017`; host processes use `mongodb://localhost:${MONGODB_PORT:-27017}`. Secrets remain outside the image and local `.env` files are excluded from both Git and Docker build contexts.
+The environment-presence check does not print credentials. Secrets remain outside the image, and local `.env` files are excluded from both Git and Docker build contexts.
 
 ## 14. MCP Expansion
 
@@ -522,7 +529,7 @@ Acceptance criteria:
 - both models are callable through stable interfaces;
 - application services run with fake stores in tests;
 - no application code imports a specific vector database SDK;
-- the development image runs the Phase 0 test suite against a healthy MongoDB Compose service.
+- the development image receives user-supplied connection settings through a required `.env` file without provisioning a database.
 
 ### Phase 1: Indexing MVP — 1 to 2 weeks
 

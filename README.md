@@ -18,9 +18,10 @@ mypy src
 
 ## Docker development environment
 
-Docker Compose starts MongoDB, waits for it to become healthy, builds the Python
-development image, and runs the Phase 0 unit-test suite inside the
-`knowledge-base` container.
+Docker Compose builds the Python development image, loads user-provided connection
+and model settings from `.env`, and runs the Phase 0 unit-test suite inside the
+`knowledge-base` container. It does not create MongoDB or any other external
+service.
 
 Create a local environment file:
 
@@ -38,32 +39,28 @@ Validate the Compose configuration and run the stack:
 
 ```bash
 docker compose config
+docker compose run --rm knowledge-base python -c \
+  "import os; assert os.environ.get('MONGODB_URI')"
 docker compose up --build --abort-on-container-exit \
   --exit-code-from knowledge-base
 ```
 
+The `env_file: .env` setting explicitly passes every variable in `.env` to the
+container. Compose also reads the project `.env` for `${VAR}` interpolation, but
+interpolation alone does not inject every variable into a container. The validation
+command above checks that `MONGODB_URI` is present without printing the credential.
+
 The `knowledge-base` container exits after the tests finish because Phase 0 is a
-library foundation and does not yet include a long-running API. To run MongoDB
-alone while developing locally:
-
-```bash
-docker compose up -d mongodb
-```
-
-Stop containers while preserving MongoDB data:
+library foundation and does not yet include a long-running API. Stop and remove the
+test container with:
 
 ```bash
 docker compose down
 ```
 
-To intentionally delete the local MongoDB volume as well:
-
-```bash
-docker compose down -v
-```
-
-Inside Compose, the application uses `mongodb://mongodb:27017`. Programs running
-directly on the host use `mongodb://localhost:${MONGODB_PORT:-27017}`.
+Set `MONGODB_URI` and `MONGODB_DATABASE` to the connection information supplied by
+the user or deployment environment. Do not commit `.env`; it is excluded from Git
+and from the Docker build context.
 
 Phase 0 includes domain models, storage/model ports, OpenAI-compatible HTTP model
 adapters, a MongoDB document-store adapter, an in-memory vector store, fake model
