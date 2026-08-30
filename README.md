@@ -17,16 +17,17 @@ A team-oriented engineering knowledge platform that continuously indexes GitHub 
 Phase 0 foundation has started on this branch. The repository now includes:
 
 - Python 3.12 package configuration;
-- environment-driven PostgreSQL settings;
+- YAML-based non-sensitive configuration plus `.env`/environment-based secrets;
 - async SQLAlchemy database lifecycle;
 - initial repository/document/chunk/index-job models;
 - pgvector-backed chunk embeddings;
 - Apache AGE extension/graph bootstrap SQL;
 - initial PostgreSQL schema and HNSW vector index;
 - `DocumentStore`, `VectorStore`, `GraphStore`, and `MemoryStore` protocol boundaries;
+- PostgreSQL `DocumentStore` and pgvector `VectorStore` adapters;
 - basic unit-test scaffolding.
 
-The project does **not** start its own database. `DATABASE_URL` and database infrastructure are supplied externally.
+The project does **not** start its own database. Database infrastructure and credentials are supplied externally.
 
 ## Target Architecture
 
@@ -74,19 +75,52 @@ The project standardizes on **PostgreSQL** as the database platform.
 | Vector search | pgvector | embedding storage and semantic similarity search |
 | Graph | Apache AGE | repository/service/API/database/deployment relationships and multi-hop traversal |
 
-This replaces the earlier MongoDB + replaceable external Vector DB plan. PostgreSQL remains the source of truth; pgvector and AGE are logical capabilities within the same database platform.
+PostgreSQL remains the source of truth; pgvector and AGE are logical capabilities within the same database platform.
 
-## Local Configuration
+## Configuration Strategy
 
-Copy `.env.example` to `.env` and provide an externally managed PostgreSQL instance with pgvector and Apache AGE available.
+Configuration is split by sensitivity:
+
+- `config/app.yml`: all **non-sensitive** settings such as host, port, database name, feature flags, pool sizes, graph name, embedding dimension, and model IDs.
+- `.env` / process environment: **sensitive** values only, such as usernames, passwords, API keys, and access tokens.
+- `.env` is ignored by Git. `.env.example` documents the required secret names without real credentials.
+
+Example non-sensitive configuration:
+
+```yaml
+database:
+  driver: postgresql+asyncpg
+  host: localhost
+  port: 5432
+  name: ai_knowledge_base
+  echo: false
+  pool_size: 10
+  max_overflow: 20
+
+pgvector:
+  enabled: true
+
+age:
+  enabled: true
+  graph_name: ai_knowledge_graph
+
+embedding:
+  model_id: text-embedding-model
+  dimension: 1024
+  index_version: embedding-v1
+```
+
+Example `.env`:
 
 ```env
-DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/ai_knowledge_base
-PGVECTOR_ENABLED=true
-AGE_ENABLED=true
-AGE_GRAPH_NAME=ai_knowledge_graph
-EMBEDDING_DIMENSION=1024
+POSTGRES_USER=ai_kb_user
+POSTGRES_PASSWORD=change-me
+# EMBEDDING_API_KEY=
+# GENERAL_LLM_API_KEY=
+# GITHUB_TOKEN=
 ```
+
+At startup, the application loads YAML first, loads secrets from `.env`/environment variables, then builds the PostgreSQL DSN internally. A full `DATABASE_URL` containing credentials is intentionally not stored in YAML or `.env`.
 
 Bootstrap SQL is currently kept in:
 
@@ -167,7 +201,8 @@ Start with a simple PostgreSQL-backed memory store behind a `MemoryStore` port. 
 
 - Python 3.12+
 - FastAPI
-- Pydantic
+- Pydantic / pydantic-settings
+- PyYAML
 - PostgreSQL
 - pgvector
 - Apache AGE
@@ -181,7 +216,7 @@ Start with a simple PostgreSQL-backed memory store behind a `MemoryStore` port. 
 
 ## Roadmap
 
-1. **Foundation** — PostgreSQL schema, ports/adapters, model clients, tests. **In progress.**
+1. **Foundation** — PostgreSQL schema, ports/adapters, configuration, model clients, tests. **In progress.**
 2. **Indexing MVP** — Git sync, parser/chunker, incremental indexing, pgvector writes.
 3. **Retrieval MVP** — vector retrieval, filters, reranking, citations.
 4. **RAG Answering** — grounded context builder and LLM answer generation.
