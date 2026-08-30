@@ -2,63 +2,91 @@
 
 ## 1. Goal
 
-Build a Python-first, text-only knowledge base that:
+Build a Python-first team engineering knowledge platform that:
 
-- indexes Markdown, source code, comments, and infrastructure configuration from GitHub;
-- uses an existing text embedding model for semantic retrieval;
-- uses an existing general LLM for grounded answer generation;
-- stores canonical text and metadata in MongoDB;
-- keeps the Vector DB replaceable;
-- can later be exposed as Agent tools or an MCP server for other AI clients;
-- excludes image parsing, OCR, image embeddings, and image storage.
+- indexes Markdown, source code, comments, and infrastructure configuration from GitHub repositories;
+- uses the existing text embedding model for semantic retrieval;
+- uses the existing general LLM for grounded answer generation and semantic knowledge extraction;
+- standardizes persistence on PostgreSQL;
+- uses pgvector for vector search;
+- uses Apache AGE for graph relationships and multi-hop traversal;
+- keeps Knowledge, Memory, and Runtime context as separate logical layers;
+- can later be exposed as Agent tools or an MCP server;
+- keeps image understanding as a later extension rather than an MVP requirement.
 
 ## 2. Architecture Principles
 
-1. MongoDB is the source of truth for documents, chunks, metadata, and indexing state.
-2. The Vector DB is a derived search index and must be rebuildable from MongoDB.
-3. Application services depend on Python protocols, not database SDKs.
-4. Model providers are replaceable through embedding and LLM ports.
-5. FastAPI, Agent tools, and MCP tools reuse the same application services.
-6. The first MCP release is read-only.
-7. Every answer includes repository, path, commit, and heading references.
+1. PostgreSQL is the durable source of truth for repositories, documents, chunks, metadata, indexing state, and simple memory records.
+2. pgvector is the semantic retrieval index. Embeddings must be rebuildable from canonical PostgreSQL content.
+3. Apache AGE stores graph entities and relationships that benefit from traversal; graph data must retain evidence back to canonical repository content.
+4. Knowledge, AI memory, and live runtime state are different context sources and must not be mixed into one lifecycle.
+5. Application services depend on Python ports/protocols rather than database-specific APIs.
+6. Deterministic parsers are preferred over LLM extraction for structured formats.
+7. FastAPI, Agent tools, and MCP reuse the same application services.
+8. Every grounded knowledge answer should retain repository, path, commit, and heading references.
+9. Runtime Kubernetes data is fetched live where practical instead of being treated as durable knowledge.
 
 ## 3. Target Architecture
 
 ```mermaid
 flowchart TB
-    A[GitHub repositories] --> B[Git sync or webhook]
-    B --> C[Repository scanner]
-    C --> D[Text parser and chunker]
-    D --> E[MongoDB document store]
-    D --> F[Embedding provider]
-    F --> G[Vector store port]
+    U[User / AI Client] --> O[LangGraph Orchestrator / Context Builder]
+    O --> K[Knowledge Retriever]
+    O --> M[Memory Retriever]
+    O --> R[Runtime Retriever]
 
-    H[FastAPI] --> I[Retrieval service]
-    J[Agent runtime] --> I
-    K[MCP server] --> I
+    subgraph Knowledge Layer
+        GH[GitHub repositories] --> GS[Git sync / webhook]
+        GS --> SC[Repository scanner]
+        SC --> PC[Parser + chunker]
+        PC --> PG[(PostgreSQL)]
+        PC --> EM[Embedding provider]
+        EM --> PV[pgvector]
+        SC --> EX[Entity / relation extraction]
+        EX --> AGE[Apache AGE]
+        K --> PG
+        K --> PV
+        K --> AGE
+    end
 
-    I --> G
-    I --> E
-    I --> L[General LLM provider]
+    subgraph Memory Layer
+        M --> MS[(PostgreSQL memory tables)]
+    end
+
+    subgraph Runtime Layer
+        R --> K8S[Kubernetes API]
+        K8S --> RT[Deployments / Pods / Logs]
+    end
+
+    O --> LLM[General LLM]
 ```
+
+The three retrieval layers have different responsibilities:
+
+- **Knowledge Layer**: what the repositories and verified engineering sources say.
+- **Memory Layer**: what the AI/team previously decided or experienced across sessions.
+- **Runtime Layer**: what the deployed system is doing now.
 
 ## 4. Initial Technology Stack
 
 | Area | Initial choice | Replaceable |
 | --- | --- | --- |
 | Language | Python 3.12+ | No |
-| HTTP API | FastAPI | Yes, but not required |
+| HTTP API | FastAPI | Yes |
 | Validation | Pydantic | Yes |
-| Text database | MongoDB | Yes, through `DocumentStore` |
-| Vector database | Undecided | Yes, through `VectorStore` |
-| Embedding | Existing embedding model | Yes, through `EmbeddingProvider` |
-| Generation | Existing general LLM | Yes, through `LLMProvider` |
+| Canonical database | PostgreSQL | Yes, behind ports |
+| Vector search | pgvector | Yes, behind `VectorStore` |
+| Graph | Apache AGE | Yes, behind `GraphStore` |
+| Embedding | Existing embedding model | Yes, behind `EmbeddingProvider` |
+| Generation / extraction | Existing general LLM | Yes, behind `LLMProvider` |
+| Agent orchestration | LangGraph | Yes |
+| Runtime integration | Kubernetes Python client | Yes |
 | Background work | Dramatiq or Celery | Yes |
 | Deployment | Docker and Kubernetes | Yes |
 | Metrics | Prometheus endpoint | Yes |
 | MCP | Python MCP SDK / FastMCP | Yes |
 
-The MVP can use an in-memory vector adapter for development until the production Vector DB is selected.
+The database deployment is intentionally consolidated: PostgreSQL provides relational/document metadata storage, pgvector provides vector search, and AGE provides graph capability.
 
 ## 5. Repository Layout
 
@@ -66,178 +94,79 @@ The MVP can use an in-memory vector adapter for development until the production
 ai-knowledge-base/
 ├── apps/
 │   ├── api/
-│   │   └── main.py
 │   ├── worker/
-│   │   └── main.py
 │   ├── mcp_server/
-│   │   └── server.py
 │   └── agent/
-│       └── agent.py
-├── src/
-│   └── knowledge_base/
-│       ├── domain/
-│       │   ├── models.py
-│       │   └── exceptions.py
-│       ├── application/
-│       │   ├── indexing_service.py
-│       │   ├── retrieval_service.py
-│       │   ├── answer_service.py
-│       │   └── reindex_service.py
-│       ├── ports/
+├── src/knowledge_base/
+│   ├── domain/
+│   ├── application/
+│   │   ├── indexing_service.py
+│   │   ├── retrieval_service.py
+│   │   ├── graph_service.py
+│   │   ├── memory_service.py
+│   │   ├── runtime_service.py
+│   │   └── answer_service.py
+│   ├── ports/
+│   │   ├── document_store.py
+│   │   ├── vector_store.py
+│   │   ├── graph_store.py
+│   │   ├── memory_store.py
+│   │   ├── runtime_provider.py
+│   │   ├── embedding_provider.py
+│   │   ├── llm_provider.py
+│   │   └── source_repository.py
+│   └── adapters/
+│       ├── postgres/
 │       │   ├── document_store.py
 │       │   ├── vector_store.py
-│       │   ├── embedding_provider.py
-│       │   ├── llm_provider.py
-│       │   └── source_repository.py
-│       └── adapters/
-│           ├── document_stores/
-│           │   └── mongodb.py
-│           ├── vector_stores/
-│           │   ├── memory.py
-│           │   ├── qdrant.py
-│           │   ├── milvus.py
-│           │   └── pgvector.py
-│           ├── models/
-│           │   ├── embedding_client.py
-│           │   └── llm_client.py
-│           └── github/
-│               ├── client.py
-│               └── webhook.py
+│       │   ├── graph_store.py
+│       │   └── memory_store.py
+│       ├── kubernetes/
+│       ├── models/
+│       └── github/
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── evaluation/
 ├── deploy/
-│   ├── docker/
-│   ├── helm/
-│   └── kubernetes/
 ├── docs/
 ├── pyproject.toml
 └── README.md
 ```
 
-## 6. Core Python Ports
+## 6. Core Ports
 
-### 6.1 Embedding Provider
+Keep the existing `EmbeddingProvider`, `LLMProvider`, `DocumentStore`, and `VectorStore` abstractions. Add two important boundaries:
 
-```python
-from typing import Protocol, Sequence
-
-
-class EmbeddingProvider(Protocol):
-    @property
-    def dimension(self) -> int: ...
-
-    async def embed_documents(
-        self,
-        texts: Sequence[str],
-    ) -> list[list[float]]: ...
-
-    async def embed_query(
-        self,
-        text: str,
-    ) -> list[float]: ...
-```
-
-### 6.2 General LLM Provider
-
-```python
-from typing import Protocol, Sequence
-from dataclasses import dataclass
-
-
-@dataclass
-class ChatMessage:
-    role: str
-    content: str
-
-
-class LLMProvider(Protocol):
-    async def generate(
-        self,
-        messages: Sequence[ChatMessage],
-        temperature: float = 0.0,
-    ) -> str: ...
-```
-
-### 6.3 Document Store
+### GraphStore
 
 ```python
 from typing import Protocol, Sequence
 
-
-class DocumentStore(Protocol):
-    async def connect(self) -> None: ...
-    async def close(self) -> None: ...
-    async def upsert_documents(self, documents: Sequence[object]) -> None: ...
-    async def upsert_chunks(self, chunks: Sequence[object]) -> None: ...
-    async def get_chunk(self, chunk_id: str) -> object | None: ...
-    async def get_chunks(self, chunk_ids: Sequence[str]) -> list[object]: ...
-    async def delete_document_chunks(self, document_id: str) -> None: ...
-    async def mark_chunks_indexed(
-        self,
-        chunk_ids: Sequence[str],
-        index_version: str,
-    ) -> None: ...
+class GraphStore(Protocol):
+    async def upsert_entities(self, entities: Sequence[object]) -> None: ...
+    async def upsert_relations(self, relations: Sequence[object]) -> None: ...
+    async def neighbors(self, entity_id: str, relation_types: list[str] | None = None) -> list[object]: ...
+    async def traverse(self, start_id: str, max_depth: int = 3) -> list[object]: ...
 ```
 
-### 6.4 Vector Store
+### MemoryStore
 
 ```python
 from typing import Protocol, Sequence
-from dataclasses import dataclass
 
-
-@dataclass
-class VectorRecord:
-    id: str
-    vector: list[float]
-    metadata: dict
-
-
-@dataclass
-class VectorMatch:
-    id: str
-    score: float
-    metadata: dict
-
-
-class VectorStore(Protocol):
-    async def connect(self) -> None: ...
-    async def close(self) -> None: ...
-
-    async def ensure_collection(
-        self,
-        collection_name: str,
-        dimension: int,
-    ) -> None: ...
-
-    async def upsert(
-        self,
-        collection_name: str,
-        records: Sequence[VectorRecord],
-    ) -> None: ...
-
-    async def search(
-        self,
-        collection_name: str,
-        query_vector: list[float],
-        top_k: int,
-        filters: dict | None = None,
-    ) -> list[VectorMatch]: ...
-
-    async def delete(
-        self,
-        collection_name: str,
-        ids: Sequence[str],
-    ) -> None: ...
+class MemoryStore(Protocol):
+    async def add(self, memory: object) -> None: ...
+    async def search(self, query: str, limit: int = 10) -> Sequence[object]: ...
+    async def invalidate(self, memory_id: str) -> None: ...
 ```
 
-## 7. MongoDB Data Model
+These ports allow AGE or the memory implementation to evolve without coupling the agent to a database SDK.
+
+## 7. PostgreSQL Data Model
+
+Initial relational tables:
 
 ### `repositories`
 
-- `_id`
+- `id`
 - `owner`
 - `name`
 - `default_branch`
@@ -248,7 +177,7 @@ class VectorStore(Protocol):
 
 ### `documents`
 
-- `_id`
+- `id`
 - `repository_id`
 - `path`
 - `title`
@@ -257,7 +186,7 @@ class VectorStore(Protocol):
 - `commit_sha`
 - `content_hash`
 - `raw_text`
-- `metadata`
+- `metadata JSONB`
 - `index_status`
 - `created_at`
 - `updated_at`
@@ -265,7 +194,7 @@ class VectorStore(Protocol):
 
 ### `chunks`
 
-- `_id`
+- `id`
 - `document_id`
 - `repository_id`
 - `chunk_index`
@@ -274,18 +203,16 @@ class VectorStore(Protocol):
 - `token_count`
 - `content_hash`
 - `commit_sha`
-- `vector_status`
-- `vector_index_version`
+- `embedding vector(N)`
 - `embedding_model`
-- `embedding_dimension`
-- `retry_count`
-- `metadata`
+- `embedding_index_version`
+- `metadata JSONB`
 - `created_at`
 - `updated_at`
 
 ### `index_jobs`
 
-- `_id`
+- `id`
 - `repository_id`
 - `commit_sha`
 - `status`
@@ -296,108 +223,174 @@ class VectorStore(Protocol):
 - `started_at`
 - `finished_at`
 
-## 8. Vector Record Contract
+### `memories` (later phase)
 
-The Vector DB stores embeddings and references, not the canonical full text.
+- `id`
+- `scope`
+- `memory_type` (`semantic`, `episodic`, `decision`)
+- `content`
+- `metadata JSONB`
+- `valid_from`
+- `valid_until`
+- `created_at`
+- `updated_at`
 
-```json
-{
-  "id": "chunk-id",
-  "vector": [0.012, -0.038, 0.104],
-  "metadata": {
-    "document_id": "document-id",
-    "repository_id": "repo-id",
-    "branch": "main",
-    "commit_sha": "abc123",
-    "document_type": "markdown",
-    "index_version": "embedding-v1"
-  }
-}
-```
+Use pgvector indexes on chunk embeddings. Index selection (HNSW/IVFFlat) should be benchmarked using the project evaluation set instead of hard-coded prematurely.
 
-Search returns chunk IDs and scores. Full chunk text is batch-loaded from MongoDB.
+## 8. Apache AGE Graph Model
 
-## 9. Indexing Flow
+Initial entity types:
+
+- Repository
+- Service
+- API
+- Database
+- Technology
+- Deployment
+- KubernetesWorkload
+- Document
+
+Initial relationships:
+
+- `CONTAINS`
+- `DEPENDS_ON`
+- `CALLS`
+- `USES`
+- `EXPOSES`
+- `DEPLOYED_BY`
+- `DESCRIBES`
+
+Each graph fact should retain evidence such as repository ID, path, commit SHA, parser/extractor version, and confidence when the relationship came from an LLM.
+
+Do not persist ephemeral Pod names as durable graph facts. Store stable workload identity such as cluster, namespace, Deployment/StatefulSet, and label selectors; resolve current Pods through the Kubernetes API at query time.
+
+## 9. Knowledge Extraction Flow
 
 ```mermaid
 flowchart TD
-    A[GitHub webhook or manual trigger] --> B[Create index job]
+    A[GitHub webhook / sync / manual trigger] --> B[Create index job]
     B --> C[Compare commit SHA]
     C --> D[Download changed files]
-    D --> E[Filter supported text files]
-    E --> F[Parse and chunk]
-    F --> G[Upsert MongoDB with vector status pending]
-    G --> H[Generate embeddings]
-    H --> I[Upsert Vector DB]
-    I --> J[Mark MongoDB chunks indexed]
-    H -->|Failure| K[Mark failed and retry]
-    I -->|Failure| K
+    D --> E[File router]
+    E --> F[Deterministic parsers]
+    E --> G[LLM semantic extractor when needed]
+    F --> H[Documents + chunks + metadata]
+    G --> H
+    H --> PG[(PostgreSQL)]
+    H --> I[Embedding provider]
+    I --> PV[pgvector]
+    F --> J[Entity / relation candidates]
+    G --> J
+    J --> N[Normalize + deduplicate + validate]
+    N --> AGE[Apache AGE]
 ```
 
-Initial supported inputs:
+Prefer deterministic parsing for Kubernetes YAML, Helm, OpenAPI, package manifests, Dockerfiles, and other structured formats. Use the LLM for README semantics, code intent, ambiguous relationships, summaries, and normalization assistance.
 
-- Markdown and README files;
-- Python source and comments;
-- YAML and YML;
-- Dockerfiles;
-- Helm charts;
-- Kubernetes manifests;
-- GitHub Actions workflows.
+## 10. Consistency Strategy
 
-Initial chunking targets:
+PostgreSQL consolidation simplifies the previous MongoDB/external-vector consistency problem, but indexing must remain idempotent.
 
-- 400 to 800 tokens per chunk;
-- 50 to 100 token overlap;
-- Markdown split by heading hierarchy;
-- source code split by class or function when possible;
-- YAML split by top-level key or Kubernetes resource;
-- stable metadata for repository, branch, path, commit, and heading.
-
-## 10. Cross-Database Consistency
-
-MongoDB and the Vector DB do not share a transaction. Indexing therefore uses an idempotent state machine:
+Recommended state flow:
 
 ```text
-pending -> embedding -> vector_upsert -> indexed
-                    \-> failed -> retry
+pending -> parsed -> embedded -> graph_extracted -> indexed
+                     |                |
+                     +---- failed ----+
+                              |
+                            retry
 ```
 
 Requirements:
 
-- MongoDB is written before the Vector DB.
-- `content_hash` prevents unnecessary re-embedding.
-- every Vector DB upsert uses a stable chunk ID;
-- retries must be idempotent;
-- stale vectors are deleted after a successful replacement;
-- a reconciliation job compares MongoDB state with Vector DB state;
-- a complete Vector DB rebuild can be started from MongoDB.
+- canonical document/chunk rows are written before derived indexes are considered complete;
+- `content_hash` prevents unnecessary re-embedding;
+- stable chunk IDs allow safe upserts;
+- embedding/model versions are recorded;
+- graph facts retain evidence and extractor version;
+- incremental scans remove or invalidate facts whose source content was deleted;
+- monthly or operator-triggered full rebuild remains supported;
+- vector and graph projections can be reconstructed from canonical repository content.
 
 ## 11. Retrieval and Answer Flow
 
 ```mermaid
 flowchart TD
-    A[User query] --> B[Input and permission validation]
+    A[User query] --> B[Intent + permission validation]
     B --> C[Query embedding]
-    C --> D[Vector DB top-K search]
-    D --> E[Chunk IDs and scores]
-    E --> F[MongoDB batch fetch]
-    F --> G[Deduplicate and build context]
-    G --> H[General LLM]
-    H --> I[Answer with source references]
+    C --> D[pgvector Top-K]
+    D --> E[Rerank / metadata filter]
+    E --> F{Relationship context needed?}
+    F -->|No| H[Context builder]
+    F -->|Yes| G[AGE graph expansion]
+    G --> H
+    H --> I[Fetch canonical PostgreSQL content]
+    I --> J[General LLM]
+    J --> K[Answer with source references]
 ```
 
-MVP retrieval behavior:
+Graph traversal is query-dependent. A simple question such as "How do I run service X locally?" may only need vector retrieval. Questions such as "Which services depend on X and where are they deployed?" can use AGE for multi-hop traversal.
 
-1. Generate a query embedding.
-2. Apply repository and authorization filters before or during vector search.
-3. Request approximately 20 candidates.
-4. Batch-fetch canonical chunks from MongoDB.
-5. Remove duplicate or stale results.
-6. Select approximately 5 to 10 chunks within the context budget.
-7. Ask the LLM to answer only from retrieved context.
-8. Return repository, path, heading, commit SHA, and score.
+## 12. Runtime Layer
 
-## 12. FastAPI Endpoints
+Runtime retrieval is implemented as explicit tools, for example:
+
+```text
+resolve_repo_workload(repo)
+get_deployments(cluster, namespace)
+get_pods(cluster, namespace, selector)
+get_pod_logs(cluster, namespace, pod, container?, since?)
+```
+
+Flow:
+
+```text
+repository
+  -> PostgreSQL / AGE stable workload mapping
+  -> cluster + namespace + workload + selector
+  -> Kubernetes API
+  -> current Pods / status / logs
+  -> Context Builder
+```
+
+Use a dedicated Kubernetes ServiceAccount with least-privilege RBAC. Dex is not required for the initial service identity. User-aware OIDC/RBAC can be introduced later if runtime authorization must differ by user.
+
+## 13. Memory Layer
+
+The first memory implementation should remain intentionally simple and use PostgreSQL behind `MemoryStore`.
+
+Memory categories:
+
+- semantic memory: durable learned/confirmed facts;
+- episodic memory: prior troubleshooting or work sessions;
+- decision memory: architecture and implementation decisions;
+- working/session state remains in the orchestrator rather than being promoted automatically to long-term memory.
+
+A specialized framework such as Graphiti/Zep or Mem0 can be evaluated later when temporal fact invalidation, memory consolidation, or high-volume cross-session retrieval becomes necessary.
+
+## 14. Configuration
+
+```env
+DATABASE_URL=postgresql+asyncpg://user:password@postgres:5432/ai_knowledge_base
+
+PGVECTOR_ENABLED=true
+EMBEDDING_MODEL_ID=text-embedding-model
+EMBEDDING_DIMENSION=1024
+EMBEDDING_INDEX_VERSION=embedding-v1
+
+AGE_ENABLED=true
+AGE_GRAPH_NAME=ai_knowledge_graph
+
+GENERAL_LLM_MODEL_ID=general-llm
+
+KUBERNETES_RUNTIME_ENABLED=false
+```
+
+The embedding dimension is configuration. A model migration must be versioned and should build a new index before retiring the old one.
+
+## 15. API / MCP / Agent Boundaries
+
+FastAPI endpoints can retain the retrieval/answer split:
 
 ```text
 POST /v1/search
@@ -412,863 +405,179 @@ GET  /health/ready
 GET  /metrics
 ```
 
-`/v1/search` performs retrieval only. `/v1/answer` performs retrieval and LLM generation. This separation lets Agents and MCP clients retrieve knowledge without causing a second LLM call.
-
-## 13. Configuration
-
-```env
-DOCUMENT_STORE_BACKEND=mongodb
-MONGODB_URI=mongodb://mongodb:27017
-MONGODB_DATABASE=ai_knowledge_base
-
-VECTOR_STORE_BACKEND=memory
-VECTOR_STORE_URL=
-VECTOR_STORE_API_KEY=
-VECTOR_COLLECTION=knowledge_chunks_v1
-
-EMBEDDING_MODEL_ID=text-embedding-model
-EMBEDDING_DIMENSION=1024
-EMBEDDING_INDEX_VERSION=embedding-v1
-
-GENERAL_LLM_MODEL_ID=general-llm
-```
-
-The embedding dimension must be configuration, not a Python constant. A model change with a different dimension creates a new vector collection and index version.
-
-## 14. MCP Expansion
-
-The MCP server wraps application services and never accesses MongoDB or the Vector DB directly.
-
-Initial read-only tools:
-
-```text
-search(query, repository_ids?, top_k?)
-fetch(id)
-list_repositories()
-get_index_status(repository_id)
-```
-
-`search` returns result IDs, titles, and canonical URLs. `fetch` returns full text and metadata. The MCP layer uses explicit schemas and read-only safety annotations.
-
-Development transport:
-
-- STDIO for local testing;
-- Streamable HTTP for Kubernetes and remote AI clients;
-- OAuth or service authentication for private knowledge.
-
-## 15. Agent Expansion
-
-The first Agent uses the Knowledge Base as tools:
+Later MCP/Agent tools:
 
 ```text
 kb_search
 kb_fetch
-list_repositories
-get_index_status
+graph_neighbors
+graph_traverse
+memory_search
+get_repo_runtime
+get_pods
+get_pod_logs
 ```
 
-Possible later workflows:
-
-- compare deployment settings across repositories;
-- find inconsistent README and Helm configuration;
-- generate troubleshooting checklists from runbooks;
-- combine monitoring alerts with knowledge retrieval;
-- route questions to repository-specific specialists;
-- request human approval before any future write action.
-
-The Agent must not query database clients directly. It calls the same retrieval service used by FastAPI and MCP.
+LangGraph is the planned orchestrator for choosing between Knowledge, Memory, and Runtime tools. Tool implementations call application services; the LLM/agent must not access PostgreSQL, AGE, or Kubernetes clients directly.
 
 ## 16. Delivery Phases
 
-### Phase 0: Foundation — 3 to 5 days
+### Phase 0: PostgreSQL Foundation
 
-- initialize the Python project;
-- define domain models and ports;
-- implement model adapters;
-- implement MongoDB connection lifecycle;
-- implement the in-memory Vector Store;
-- add unit-test infrastructure.
+- initialize Python project and ports;
+- configure PostgreSQL lifecycle and migrations;
+- enable pgvector and AGE in the target PostgreSQL environment;
+- implement PostgreSQL `DocumentStore`;
+- implement pgvector `VectorStore`;
+- add fake model/store adapters and unit tests.
 
-Acceptance criteria:
+Acceptance: application services work through ports and one PostgreSQL platform can provide canonical storage plus vector capability.
 
-- both models are callable through stable interfaces;
-- application services run with fake stores in tests;
-- no application code imports a specific vector database SDK.
-
-### Phase 1: Indexing MVP — 1 to 2 weeks
+### Phase 1: Indexing MVP
 
 - GitHub repository synchronization;
 - incremental commit comparison;
-- Markdown and text parsing;
+- Markdown/text/source/config parsing;
 - chunking and metadata;
-- MongoDB persistence;
+- PostgreSQL persistence;
 - embedding batch calls;
-- Vector Store upsert;
-- retryable indexing jobs.
+- pgvector indexing;
+- retryable index jobs.
 
-Acceptance criteria:
+Acceptance: repositories can be indexed end-to-end and unchanged chunks are not embedded again.
 
-- one repository can be indexed end-to-end;
-- unchanged content is not embedded again;
-- failed vector writes can be retried safely.
-
-### Phase 2: Retrieval MVP — 1 week
+### Phase 2: Retrieval MVP
 
 - query embedding;
-- top-K vector retrieval;
-- MongoDB batch fetch;
-- metadata filtering;
-- source references;
+- pgvector Top-K retrieval;
+- metadata/repository/authorization filters;
+- reranking hook;
+- canonical PostgreSQL fetch;
 - retrieval evaluation dataset.
 
-Acceptance criteria:
+Acceptance: known questions retrieve expected evidence in Top 5 and stale/unauthorized chunks are excluded.
 
-- known test questions retrieve the expected source in Top 5;
-- stale or unauthorized chunks are excluded;
-- search latency metrics are exposed.
-
-### Phase 3: RAG Answer — 1 week
+### Phase 3: RAG Answer
 
 - context builder;
 - grounded prompt;
 - LLM generation;
 - answer citations;
-- refusal behavior when evidence is missing.
+- evidence-missing refusal behavior;
+- latency/token metrics.
 
-Acceptance criteria:
+### Phase 4: Knowledge Graph
 
-- answers include valid repository and path references;
-- unsupported questions do not produce fabricated answers;
-- token usage and latency are measured.
+- finalize entity/relation schema;
+- implement deterministic entity extraction from structured files;
+- add LLM relation extraction for semantic sources;
+- normalize/canonicalize entities;
+- implement AGE adapter and evidence-backed upserts;
+- add graph traversal to retrieval when intent requires it.
 
-### Phase 4: Production Readiness — 1 to 2 weeks
+Acceptance: relationship-heavy test questions can traverse repository -> service -> dependency/deployment relationships with traceable evidence.
+
+### Phase 5: Production Readiness
 
 - background workers;
 - webhook verification;
-- MongoDB and Vector DB connection health;
-- retry and dead-letter handling;
-- Prometheus metrics and alerts;
-- Docker and Kubernetes manifests;
-- backup and Vector DB rebuild procedure.
+- PostgreSQL/pgvector/AGE health checks;
+- retry/dead-letter handling;
+- Prometheus metrics/alerts;
+- Docker/Kubernetes manifests;
+- backup, restore, vector rebuild, and graph rebuild procedures.
 
-### Phase 5: MCP Server — approximately 1 week
+### Phase 6: Runtime Kubernetes Context
 
-- implement `search` and `fetch`;
-- add schemas and safety annotations;
-- add Streamable HTTP transport;
-- add authentication;
-- test from an external MCP client.
+- implement stable repo-to-workload mapping;
+- Kubernetes ServiceAccount + least-privilege RBAC;
+- workload/Pod/status/log tools;
+- runtime authorization and audit logging;
+- separate live runtime evidence from durable KB content.
 
-### Phase 6: Agent — 1 to 2 weeks
+### Phase 7: Memory
 
-- expose retrieval as Agent tools;
-- implement bounded tool loops;
-- add session state, guardrails, and tracing;
-- evaluate tool selection and task completion.
+- implement `MemoryStore` on PostgreSQL;
+- decision and episodic memory;
+- cross-session retrieval;
+- explicit promotion/invalidation rules;
+- evaluate Graphiti/Zep or Mem0 only when requirements justify them.
 
-Estimated MVP: 4 to 6 weeks. Estimated production system with MCP and Agent support: 7 to 10 weeks.
+### Phase 8: MCP / Agent
+
+- expose knowledge, graph, memory, and runtime services as bounded tools;
+- use LangGraph for orchestration;
+- add session state, guardrails, tracing, authorization, and approval boundaries.
 
 ## 17. Metrics and Evaluation
 
 ### Indexing
 
-- index job success rate;
+- job success rate;
 - commit-to-searchable latency;
-- files and chunks processed per minute;
-- embedding request latency and failure rate;
-- percentage of unchanged chunks skipped;
-- retry and dead-letter counts.
+- files/chunks processed per minute;
+- embedding latency/failure rate;
+- unchanged chunks skipped;
+- graph extraction success/error rate.
 
 ### Retrieval
 
-- Recall@5 and Recall@10;
+- Recall@5 / Recall@10;
 - mean reciprocal rank;
 - irrelevant chunk rate;
-- P50 and P95 latency;
-- hit rate by document type.
+- P50/P95 latency;
+- graph traversal usefulness and latency.
 
 ### Answer Quality
 
 - citation correctness;
-- faithfulness to retrieved context;
-- refusal accuracy when evidence is missing;
-- answer latency and token usage.
+- faithfulness;
+- refusal accuracy;
+- answer latency/token usage.
 
-### Agent
+### Runtime
 
+- Kubernetes API latency/error rate;
+- authorization denials;
+- Pod/log tool success rate;
+- freshness of runtime evidence.
+
+### Memory / Agent
+
+- relevant memory recall rate;
+- stale memory rate;
 - tool selection accuracy;
 - task completion rate;
-- average tool calls per task;
-- invalid loop rate;
-- authorization and approval enforcement.
+- average tool calls;
+- invalid loop/authorization violation rate.
 
 ## 18. Immediate Next Steps
 
-1. Create the Python package and dependency configuration.
-2. Define domain models and four core ports.
-3. Implement MongoDB and in-memory Vector Store adapters.
-4. Add fake embedding and fake LLM adapters for tests.
-5. Implement Markdown parsing and chunking.
-6. Index one sample GitHub repository.
-7. Build retrieval evaluation questions before selecting the production Vector DB.
-8. Benchmark candidate Vector DB adapters using the same evaluation set.
+1. Add PostgreSQL, pgvector, and AGE configuration/migration strategy.
+2. Replace the MongoDB adapter with PostgreSQL `DocumentStore`.
+3. Make pgvector the concrete `VectorStore` implementation.
+4. Add `GraphStore` and AGE adapter interfaces without forcing graph traversal into every query.
+5. Keep repository scanning/chunking independent from persistence SDKs.
+6. Index a small repository set and build a retrieval evaluation dataset.
+7. Add graph extraction only after vector retrieval is stable.
+8. Add Kubernetes runtime tools after stable repo-to-workload identity is available.
+9. Add PostgreSQL-backed memory after the core Knowledge Layer is stable.
 
-The most important boundary is:
-
-```text
-FastAPI / MCP / Agent
-        -> Application Services
-        -> Storage and Model Ports
-        -> MongoDB / Vector DB / Model Adapters
-```
-
-This keeps the initial implementation simple while preserving the ability to replace either database and expose the same knowledge capability to future Agents and MCP clients.
-
-## 19. Repository-Scoped Indexing Modes
-
-All indexing operations use a repository as the smallest isolation unit. A job for one repository must not block or mutate any other repository.
-
-Supported modes:
-
-| Mode | Trigger | Behavior |
-| --- | --- | --- |
-| `incremental` | GitHub webhook or frequent Git sync | Process only added, modified, deleted, and renamed files between two commits |
-| `full_reconcile` | Monthly schedule or detected drift | Scan the complete current repository, reuse unchanged content, and repair MongoDB/Vector DB drift |
-| `full_rebuild` | Parser, chunking, graph schema, embedding model, or dimension change | Build new content, vector, or graph generations and activate them after validation |
-
-### 19.1 Incremental Indexing
-
-Git sync produces a working tree at a target commit. The indexer determines changes with:
-
-```bash
-git diff --name-status --find-renames <last_indexed_commit>..<target_commit>
-```
-
-Operations:
-
-- `A`: parse, chunk, embed, and insert;
-- `M`: compare content hashes and update only changed entities/chunks;
-- `D`: deactivate MongoDB documents and delete their vectors and graph evidence;
-- `R`: update paths and avoid re-embedding when content is unchanged.
-
-`last_indexed_commit` is updated only after the complete job succeeds.
-
-### 19.2 Monthly Full Reconcile
-
-Full reconcile scans every supported path at a fixed target commit and builds a manifest:
+The core dependency direction remains:
 
 ```text
-path -> content hash + commit SHA + parser version + extractor version
+FastAPI / MCP / LangGraph Agent
+            |
+            v
+     Application Services
+            |
+   +--------+---------+----------------+
+   |        |         |                |
+Document  Vector    Graph           Runtime
+ Store     Store     Store           Provider
+   |        |         |                |
+   +--------+---------+                v
+            |                    Kubernetes API
+            v
+ PostgreSQL + pgvector + AGE
 ```
-
-Reconciliation rules:
-
-- Git file exists and MongoDB document is missing: create it;
-- content hash changed: reparse and reindex it;
-- content hash unchanged and parser/extractor versions match: reuse extraction results;
-- MongoDB document exists but Git file is missing: deactivate it and remove vectors/graph evidence;
-- vector state is missing or failed: repair it;
-- graph relationships are unresolved or dangling: rerun the affected linker.
-
-Monthly full reconcile does not re-embed unchanged content.
-
-### 19.3 Full Rebuild
-
-Full rebuild creates shadow generations instead of deleting active data first:
-
-```text
-build new generation
--> validate counts, retrieval, and graph integrity
--> atomically update repository active generation
--> retain old generation for rollback
--> clean up asynchronously
-```
-
-Automatic fallback to reconcile or rebuild occurs when:
-
-- no previous indexed commit exists;
-- the previous commit is missing or is no longer an ancestor because of force-push/rebase;
-- the default branch changes;
-- parser, extractor, chunking, graph schema, embedding model, or dimension changes;
-- MongoDB and Vector DB drift exceeds an accepted threshold.
-
-### 19.4 Monthly Kubernetes Schedule
-
-Create one job per enabled repository rather than one large job for all repositories. This provides independent retries, progress, and failure isolation.
-
-```yaml
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: knowledge-base-full-reconcile
-spec:
-  schedule: "0 2 1 * *"
-  timeZone: "Asia/Taipei"
-  concurrencyPolicy: Forbid
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          restartPolicy: Never
-          containers:
-            - name: scheduler
-              image: ai-knowledge-base:latest
-              args:
-                - python
-                - -m
-                - apps.worker.schedule_reconcile
-                - --all-enabled-repositories
-```
-
-Each repository uses a separate distributed lock:
-
-```text
-knowledge-base:index:{repository_id}
-knowledge-base:graph:{repository_id}
-```
-
-Different repositories may run concurrently. Jobs for the same repository must be serialized.
-
-## 20. Repository Registry and Lifecycle
-
-The `repositories` collection is the control plane for onboarding, search, indexing, rebuild, deactivation, and purge.
-
-Additional repository fields:
-
-```json
-{
-  "status": "onboarding | active | inactive | purge_pending | purged | failed",
-  "indexing_enabled": true,
-  "search_enabled": true,
-  "last_indexed_commit": "abc123",
-  "last_full_scan_commit": "abc123",
-  "last_full_scan_at": "datetime",
-  "active_content_generation": "content-v3",
-  "active_embedding_generation": "embedding-v2",
-  "active_graph_generation": "graph-v7",
-  "collection_strategy": "shared | dedicated | partitioned"
-}
-```
-
-### 20.1 Add Repository
-
-```text
-register repository
--> verify access and default branch
--> status = onboarding
--> run initial full reconcile
--> validate text/vector/graph outputs
--> status = active
--> enable webhook/incremental indexing
-```
-
-The repository is excluded from production search until onboarding validation succeeds.
-
-### 20.2 Remove Repository
-
-Removal from the knowledge base never deletes the upstream GitHub repository.
-
-Two-phase removal:
-
-1. Deactivate immediately: stop indexing and exclude the repository from all searches.
-2. Purge asynchronously after an optional grace period: remove vectors, chunks, documents, entities, and edges while retaining a minimal audit record.
-
-```text
-POST   /v1/repositories/{repository_id}/deactivate
-POST   /v1/repositories/{repository_id}/activate
-DELETE /v1/repositories/{repository_id}?purge=true
-```
-
-## 21. Hybrid Vector Collection Strategy
-
-Do not require every repository to use the same physical layout.
-
-### 21.1 Shared Collections
-
-Use for normal repositories with compatible permissions and the same embedding model/version:
-
-```text
-knowledge_shared_embedding_v1
-  repository_id = repo-a
-  repository_id = repo-b
-  repository_id = repo-c
-```
-
-Every vector record includes `repository_id`, generation, document ID, commit, and authorization metadata.
-
-### 21.2 Dedicated Collections
-
-Use for large legacy repositories, strict isolation, custom index parameters, or different embedding models:
-
-```text
-knowledge_legacy_erp_embedding_v1
-```
-
-### 21.3 Partitioned Collections
-
-Very large repositories may be partitioned by meaningful module boundaries:
-
-```text
-knowledge_legacy_erp_backend_v1
-knowledge_legacy_erp_database_v1
-knowledge_legacy_erp_batch_v1
-knowledge_legacy_erp_docs_v1
-```
-
-Partition by service, module, top-level path, language, or document type. Do not split only by an arbitrary file count.
-
-### 21.4 Collection Registry
-
-MongoDB resolves a logical repository to physical collections:
-
-```json
-{
-  "repository_id": "legacy-erp",
-  "strategy": "partitioned",
-  "embedding_model": "text-embedding-model",
-  "active_generation": "embedding-v3",
-  "collections": [
-    {
-      "name": "knowledge_legacy_erp_backend_v3",
-      "partition_key": "backend",
-      "path_patterns": ["backend/**"]
-    },
-    {
-      "name": "knowledge_legacy_erp_database_v3",
-      "partition_key": "database",
-      "path_patterns": ["database/**", "sql/**"]
-    }
-  ]
-}
-```
-
-## 22. Cross-Repository Search
-
-Searching every collection for every query does not scale. Use two-stage retrieval.
-
-```mermaid
-flowchart TD
-    A[Query] --> B[Authorization filter]
-    B --> C[Repository catalog search]
-    C --> D[Candidate repositories and modules]
-    D --> E[Resolve shared/dedicated/partitioned targets]
-    E --> F[Bounded parallel searches]
-    F --> G[Rank fusion and deduplication]
-    G --> H[MongoDB batch fetch]
-    H --> I[General LLM]
-```
-
-### 22.1 Repository Catalog
-
-Maintain a small catalog index containing repository/module summaries, README topics, languages, frameworks, owners, services, paths, aliases, and authorization metadata. Global queries search this catalog first and select a bounded number of repository targets.
-
-When the user explicitly specifies repositories, skip catalog routing and search only those targets.
-
-### 22.2 Parallel Search
-
-Use bounded concurrency to protect the Vector DB. Each target returns local Top-K results. Do not compare raw scores blindly across collections with different models or index configurations.
-
-Prefer compatible models and metrics within one search group. Merge results using rank-based fusion such as Reciprocal Rank Fusion, then apply repository-routing confidence, deduplication, and an optional reranker.
-
-### 22.3 Large File Policy
-
-Large legacy files are not embedded as one document. Apply structured or streaming parsing:
-
-| File | Strategy |
-| --- | --- |
-| Large SQL | procedure, statement, DDL object, or table block |
-| Large YAML/XML | resource, top-level key, or element subtree |
-| Source code | class/function/method |
-| Large plain text | bounded streaming chunks |
-| Generated/vendor/minified/binary | exclude by policy |
-
-Use hierarchical indexing for large repositories:
-
-```text
-repository summary
--> module summary
--> file summary
--> code/text chunks
-```
-
-## 23. Code Intelligence and AST Pipeline
-
-Document RAG alone cannot reliably answer code-lineage questions. Add a deterministic code-intelligence pipeline.
-
-AST means Abstract Syntax Tree: a parser converts source text into structured nodes such as classes, functions, decorators, calls, arguments, and literals. AST extraction is deterministic and is not an AI model.
-
-```mermaid
-flowchart LR
-    A[File] --> B[Classifier]
-    B --> C[Parser]
-    C --> D[Shared AST or IR]
-    D --> E[Extractor planner]
-    E --> F[Relevant extractors]
-    F --> G[Entities and unresolved relations]
-    G --> H[Local/cross-file/cross-repo linkers]
-```
-
-### 23.1 Extractor Selection
-
-Twenty registered extractors do not mean twenty file reads or parses.
-
-```text
-read once
--> classify once
--> parse once
--> traverse shared AST/IR once when practical
--> dispatch relevant nodes to applicable extractors
-```
-
-Examples:
-
-| File | Applicable extractors |
-| --- | --- |
-| React TSX | function, component, UI element, event handler, HTTP client |
-| FastAPI Python | route, class, function, call, ORM/SQL |
-| SQL | query, procedure, table reference |
-| Kubernetes YAML | ingress, service, deployment, config, data source |
-| Markdown | document metadata and links |
-
-The planner considers repository profile, file type, framework imports, AST features, and configuration markers.
-
-### 23.2 Parse and Extraction Cache
-
-Cache key:
-
-```text
-repository_id
-+ path
-+ content_hash
-+ parser_version
-+ extractor_version
-```
-
-Monthly full scans reuse cached results when content and versions are unchanged.
-
-### 23.3 Extractors and Linkers
-
-Initial extractor families:
-
-```text
-RouteExtractor
-ClassExtractor
-FunctionExtractor
-UIComponentExtractor
-UIElementExtractor
-EventHandlerExtractor
-HttpClientCallExtractor
-ImportExtractor
-FunctionCallExtractor
-RawSQLExtractor
-ORMExtractor
-StoredProcedureExtractor
-DataSourceExtractor
-ConfigurationExtractor
-IngressExtractor
-DeploymentExtractor
-```
-
-Extractors create facts and unresolved references. Linkers resolve symbols and create graph edges. This separation avoids embedding framework-specific assumptions in the graph store.
-
-## 24. Entity Graph and Lineage Store
-
-Add a replaceable `LineageStore` port. The MVP may use MongoDB; a graph database can be introduced later without changing FastAPI, MCP, Agent, or application-service contracts.
-
-```python
-class LineageStore(Protocol):
-    async def upsert_entities(self, entities: list[object]) -> None: ...
-    async def upsert_edges(self, edges: list[object]) -> None: ...
-    async def delete_file_graph(
-        self,
-        repository_id: str,
-        path: str,
-    ) -> None: ...
-    async def traverse(
-        self,
-        start_entity_ids: list[str],
-        direction: str,
-        target_types: set[str],
-        allowed_edge_types: set[str],
-        max_depth: int,
-    ) -> list[object]: ...
-```
-
-### 24.1 Stable Entity Keys and Versioned Entities
-
-Separate logical identity from a commit-specific location:
-
-```text
-API endpoint:
-api_endpoint:{service}:{method}:{normalized_path}
-
-Function:
-function:{repository}:{module}:{qualified_name}
-
-UI element:
-ui_element:{repository}:{route}:{component}:{selector_or_text}
-
-SQL:
-sql:{repository}:{normalized_sql_hash}
-
-Data source:
-data_source:{environment}:{service}:{database_name}
-```
-
-Entity versions contain repository, graph generation, commit, path, line range, extractor, and evidence.
-
-### 24.2 Edge Types
-
-```text
-RENDERS
-CONTAINS
-TRIGGERS
-CALLS_API
-ROUTES_TO
-HANDLED_BY
-CALLS
-INVOKES
-EXECUTES
-CALLS_PROCEDURE
-READS_FROM
-WRITES_TO
-ACCESSES
-CONFIGURED_BY
-RESOLVED_FROM
-DEPLOYED_AS
-```
-
-Every edge records resolution type, confidence, commit, repository, generation, and source evidence.
-
-Confidence classes:
-
-```text
-verified_runtime
-verified_static
-config_resolved
-naming_heuristic
-embedding_match
-llm_inferred
-unknown
-```
-
-LLM-inferred edges are never equivalent to AST/config/runtime-verified edges.
-
-## 25. UI/API-to-Database Lineage
-
-The target lineage is:
-
-```text
-URL
--> frontend route
--> page/component
--> button/UI element
--> event handler
--> HTTP request
--> gateway/ingress rewrite
--> backend API endpoint
--> controller
--> service
--> repository/DAO
--> raw SQL/ORM/stored procedure
--> database/table
--> connection configuration
--> ConfigMap/Secret reference
-```
-
-Vector search discovers candidates. The Entity Graph establishes verifiable relationships. The LLM explains retrieved evidence but does not invent missing hops.
-
-### 25.1 Start from Any Entity
-
-Users do not need to start from the UI. A known endpoint may be used directly:
-
-```text
-POST /api/orders/search
--> handler
--> service
--> repository
--> SQL
--> data source
--> connection configuration
-```
-
-Generic trace request:
-
-```json
-{
-  "start": {
-    "entity_type": "api_endpoint",
-    "http_method": "POST",
-    "path": "/api/orders/search",
-    "service": "order-service",
-    "environment": "production"
-  },
-  "direction": "downstream",
-  "target_types": [
-    "sql_query",
-    "stored_procedure",
-    "data_source",
-    "connection_config"
-  ],
-  "max_depth": 10
-}
-```
-
-Traversal supports:
-
-- downstream: API to SQL/database;
-- upstream: table/database to APIs/pages;
-- both: full impact analysis.
-
-Traversal requires cycle detection, maximum depth, maximum result count, timeout, edge allowlists, active-generation filtering, and repository/environment authorization.
-
-### 25.2 Ambiguous and Branching Results
-
-Endpoint identity should include method, path, service/host, environment, and deployed version when available. If multiple endpoints match, return candidates rather than guessing.
-
-One endpoint may use multiple databases or queries based on runtime conditions. Preserve all paths and annotate conditions, confidence, evidence, and unknowns.
-
-### 25.3 SQL Semantics
-
-- Raw SQL: return the normalized SQL template and evidence.
-- ORM: return the ORM expression and confirmed tables; do not fabricate compiled SQL.
-- Stored procedure: return the procedure name and definition when indexed.
-- Dynamic SQL: return confirmed fragments and mark the result partial.
-
-### 25.4 Connection Security
-
-Never index or return database passwords. Return a masked connection description and the configuration reference:
-
-```text
-Database type: PostgreSQL
-Host: orders-db.prod.svc
-Port: 5432
-Database: orders
-Variable: ORDERS_DATABASE_URL
-Secret reference: order-system/order-db-secret#DATABASE_URL
-Masked URI: postgresql://***:***@orders-db.prod.svc:5432/orders
-```
-
-Authorization applies before traversal, retrieval, and evidence fetch. Log access without logging credentials or unnecessary sensitive data.
-
-### 25.5 Static-First, Runtime-Assisted
-
-Static analysis may be insufficient for dynamic URLs, feature flags, dependency injection, gateway rewrites, dynamic SQL, ORM compilation, and deployment drift. Optional runtime evidence may include browser/network traces, API gateway logs, OpenTelemetry spans, application spans, and database audit records.
-
-Runtime evidence validates the production path; static analysis remains the baseline graph.
-
-## 26. Entity Graph Full Scan and Incremental Update
-
-### 26.1 Full Graph Scan
-
-Use shadow graph generations:
-
-```mermaid
-flowchart TD
-    A[Pin repository HEAD commit] --> B[Create shadow graph generation]
-    B --> C[Parse all supported files]
-    C --> D[Extract entities]
-    D --> E[Resolve local and cross-repo edges]
-    E --> F[Validate graph]
-    F -->|Pass| G[Activate generation]
-    F -->|Fail| H[Keep previous generation]
-    G --> I[Clean old generation asynchronously]
-```
-
-Graph validation includes:
-
-- duplicate stable keys;
-- dangling source/target references;
-- incompatible entity/edge types;
-- unexpected entity-count drops;
-- unresolved-symbol and inferred-edge ratios;
-- route-to-handler and query-to-data-source coverage;
-- sampled API-to-database paths;
-- repository/commit/path evidence validity.
-
-### 26.2 Incremental Graph Update
-
-For changed files:
-
-1. identify entities previously produced from the file;
-2. remove or deactivate edges whose evidence came from the old file version;
-3. parse the new file once;
-4. extract new entities and unresolved references;
-5. relink impacted neighboring symbols;
-6. enqueue cross-repo link resolution when exported routes or symbols change.
-
-Stable entity keys prevent unaffected cross-repo references from depending on physical version IDs.
-
-## 27. Model Requirements
-
-No additional model is required for the first Entity Graph implementation.
-
-| Capability | Primary mechanism |
-| --- | --- |
-| Function/class/route extraction | AST and framework extractors |
-| YAML/JSON/deployment extraction | deterministic parsers |
-| SQL/table/procedure extraction | SQL parser and ORM extractors |
-| Symbol/call resolution | symbol tables, import resolution, and rule-based linkers |
-| Candidate document/entity discovery | existing text embedding model |
-| Natural-language query planning and explanation | existing general LLM |
-
-Optional later additions must be justified by evaluation:
-
-- code embedding model when the current embedding model has poor code/API/SQL Recall@K;
-- reranker when cross-repository candidate ranking is weak;
-- specialized code model for unfamiliar frameworks or complex dynamic code.
-
-Any model-generated relationship is a candidate edge marked `llm_inferred` until static or runtime evidence verifies it.
-
-## 28. Additional APIs and MCP/Agent Tools
-
-### FastAPI
-
-```text
-POST   /v1/repositories
-POST   /v1/repositories/{repository_id}/scan
-POST   /v1/repositories/{repository_id}/deactivate
-POST   /v1/repositories/{repository_id}/activate
-DELETE /v1/repositories/{repository_id}?purge=true
-
-POST   /v1/lineage/resolve
-POST   /v1/lineage/trace
-POST   /v1/lineage/ui-to-database
-GET    /v1/entities/{entity_id}
-GET    /v1/evidence/{evidence_id}
-```
-
-### MCP/Agent Read-Only Tools
-
-```text
-search
-fetch
-list_repositories
-get_index_status
-resolve_url
-find_ui_element
-trace_ui_action
-trace_api_route
-trace_to_database
-get_sql_lineage
-get_data_source
-fetch_evidence
-```
-
-These adapters call application services and never access MongoDB, the Vector DB, or the Lineage Store directly.
-
-## 29. Revised Delivery Sequence
-
-1. Implement repository registry, model/storage ports, MongoDB, and in-memory vector adapter.
-2. Implement repository-scoped incremental and monthly full-reconcile workflows.
-3. Implement Markdown/text retrieval and grounded answers.
-4. Inventory actual languages, frameworks, deployment formats, and legacy file patterns.
-5. Build a single-stack lineage proof of concept, for example React -> HTTP -> FastAPI -> service -> SQLAlchemy/raw SQL -> PostgreSQL.
-6. Add AST/IR parsing, extractor planning, caching, and deterministic entity/edge extraction.
-7. Add shadow graph generations, validation, and incremental graph updates.
-8. Add repository catalog routing and hybrid shared/dedicated/partitioned collections.
-9. Add arbitrary-node upstream/downstream lineage APIs.
-10. Add runtime evidence only where static analysis cannot provide sufficient confidence.
-11. Expose stable read-only capabilities through MCP and Agent tools.
-
-The system should progress from reliable document retrieval to evidence-backed code lineage. Agent behavior is added only after the underlying retrieval and graph contracts are stable and measurable.
