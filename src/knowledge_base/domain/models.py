@@ -9,8 +9,6 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
-from knowledge_base.config import get_settings
-
 
 class Base(DeclarativeBase):
     pass
@@ -26,9 +24,7 @@ class Repository(Base):
     last_indexed_commit: Mapped[str | None] = mapped_column(String(64))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     documents: Mapped[list[Document]] = relationship(back_populates="repository")
 
@@ -50,9 +46,7 @@ class Document(Base):
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, nullable=False)
     index_status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     repository: Mapped[Repository] = relationship(back_populates="documents")
@@ -73,14 +67,12 @@ class Chunk(Base):
     token_count: Mapped[int | None] = mapped_column(Integer)
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     commit_sha: Mapped[str] = mapped_column(String(64), nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(get_settings().embedding_dimension))
+    embedding: Mapped[list[float] | None] = mapped_column(Vector())
     embedding_model: Mapped[str | None] = mapped_column(String(255))
     embedding_index_version: Mapped[str | None] = mapped_column(String(128))
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     document: Mapped[Document] = relationship(back_populates="chunks")
 
