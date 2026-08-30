@@ -12,6 +12,22 @@ A team-oriented engineering knowledge platform that continuously indexes GitHub 
 - Allow runtime tools to resolve a repository to Kubernetes workloads and inspect current Pods/logs when a question requires live state.
 - Expose the same application services through FastAPI, Agent tools, and MCP.
 
+## Current Implementation Status
+
+Phase 0 foundation has started on this branch. The repository now includes:
+
+- Python 3.12 package configuration;
+- environment-driven PostgreSQL settings;
+- async SQLAlchemy database lifecycle;
+- initial repository/document/chunk/index-job models;
+- pgvector-backed chunk embeddings;
+- Apache AGE extension/graph bootstrap SQL;
+- initial PostgreSQL schema and HNSW vector index;
+- `DocumentStore`, `VectorStore`, `GraphStore`, and `MemoryStore` protocol boundaries;
+- basic unit-test scaffolding.
+
+The project does **not** start its own database. `DATABASE_URL` and database infrastructure are supplied externally.
+
 ## Target Architecture
 
 ```mermaid
@@ -50,7 +66,7 @@ flowchart TB
 
 ## Database Strategy
 
-The project now standardizes on **PostgreSQL** as the database platform.
+The project standardizes on **PostgreSQL** as the database platform.
 
 | Capability | Choice | Role |
 | --- | --- | --- |
@@ -59,6 +75,27 @@ The project now standardizes on **PostgreSQL** as the database platform.
 | Graph | Apache AGE | repository/service/API/database/deployment relationships and multi-hop traversal |
 
 This replaces the earlier MongoDB + replaceable external Vector DB plan. PostgreSQL remains the source of truth; pgvector and AGE are logical capabilities within the same database platform.
+
+## Local Configuration
+
+Copy `.env.example` to `.env` and provide an externally managed PostgreSQL instance with pgvector and Apache AGE available.
+
+```env
+DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/ai_knowledge_base
+PGVECTOR_ENABLED=true
+AGE_ENABLED=true
+AGE_GRAPH_NAME=ai_knowledge_graph
+EMBEDDING_DIMENSION=1024
+```
+
+Bootstrap SQL is currently kept in:
+
+```text
+migrations/001_extensions.sql
+migrations/002_schema.sql
+```
+
+`001_extensions.sql` requires a database role allowed to install extensions. Apache AGE must already be installed on the PostgreSQL server/image; `CREATE EXTENSION age` cannot install AGE binaries by itself.
 
 ## Knowledge Model
 
@@ -144,7 +181,7 @@ Start with a simple PostgreSQL-backed memory store behind a `MemoryStore` port. 
 
 ## Roadmap
 
-1. **Foundation** — PostgreSQL schema, ports/adapters, model clients, tests.
+1. **Foundation** — PostgreSQL schema, ports/adapters, model clients, tests. **In progress.**
 2. **Indexing MVP** — Git sync, parser/chunker, incremental indexing, pgvector writes.
 3. **Retrieval MVP** — vector retrieval, filters, reranking, citations.
 4. **RAG Answering** — grounded context builder and LLM answer generation.
