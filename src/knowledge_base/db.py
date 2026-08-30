@@ -10,8 +10,10 @@ class Database:
         self.settings = settings or get_settings()
         self.engine = create_async_engine(
             self.settings.database_url,
-            echo=self.settings.database_echo,
-            pool_pre_ping=True,
+            echo=self.settings.database.echo,
+            pool_pre_ping=self.settings.database.pool_pre_ping,
+            pool_size=self.settings.database.pool_size,
+            max_overflow=self.settings.database.max_overflow,
         )
         self.session_factory = async_sessionmaker(
             self.engine,
