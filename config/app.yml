@@ -1,0 +1,30 @@
+app:
+  name: ai-knowledge-base
+
+database:
+  driver: postgresql+asyncpg
+  host: localhost
+  port: 5432
+  name: ai_knowledge_base
+  echo: false
+  pool_size: 10
+  max_overflow: 20
+  pool_pre_ping: true
+
+pgvector:
+  enabled: true
+
+age:
+  enabled: true
+  graph_name: ai_knowledge_graph
+
+embedding:
+  model_id: text-embedding-model
+  dimension: 1024
+  index_version: embedding-v1
+
+llm:
+  model_id: general-llm
+
+kubernetes:
+  runtime_enabled: false
