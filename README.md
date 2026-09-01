@@ -14,18 +14,28 @@ The initial product focus is intentionally narrower: prove that GitHub repositor
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    USER[User or AI Client] --> CTX[Context Builder]
-    CTX --> KNOWLEDGE[Knowledge Retriever]
-    CTX --> MEMORY[Memory Retriever]
-    CTX --> RUNTIME[Runtime Retriever]
-    KNOWLEDGE --> POSTGRES[PostgreSQL]
-    KNOWLEDGE --> VECTOR[pgvector]
-    KNOWLEDGE --> GRAPH[Apache AGE]
-    MEMORY --> POSTGRES
-    RUNTIME --> K8S[Kubernetes API]
-    CTX --> LLM[General LLM]
+```text
+                         User / AI Client
+                                |
+                                v
+                         Context Builder
+                                |
+                 +--------------+--------------+
+                 |              |              |
+                 v              v              v
+            Knowledge        Memory         Runtime
+            Retriever        Retriever      Retriever
+                 |              |              |
+        +--------+--------+     |              v
+        |        |        |     |        Kubernetes API
+        v        v        v     |
+   PostgreSQL pgvector Apache   |
+                      AGE       |
+        |        |        |     |
+        +--------+--------+-----+
+                 |
+                 v
+            General LLM
 ```
 
 PostgreSQL is the durable source of truth. pgvector provides semantic retrieval and Apache AGE provides relationship traversal. Runtime Kubernetes state is fetched live instead of being persisted as long-term knowledge whenever practical.
