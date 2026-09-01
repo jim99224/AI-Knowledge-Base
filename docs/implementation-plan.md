@@ -1,583 +1,599 @@
 # AI Knowledge Base Implementation Plan
 
-## 1. Goal
+This document is the detailed implementation plan for the architecture and M0-M5 milestones defined in the project README.
 
-Build a Python-first team engineering knowledge platform that:
+## 1. Product Goal
 
-- indexes Markdown, source code, comments, and infrastructure configuration from GitHub repositories;
-- uses the existing text embedding model for semantic retrieval;
-- uses the existing general LLM for grounded answer generation and semantic knowledge extraction;
-- standardizes persistence on PostgreSQL;
-- uses pgvector for vector search;
-- uses Apache AGE for graph relationships and multi-hop traversal;
-- keeps Knowledge, Memory, and Runtime context as separate logical layers;
-- can later be exposed as Agent tools or an MCP server;
-- keeps image understanding as a later extension rather than an MVP requirement.
+Build a Python-first team engineering knowledge platform that makes repository knowledge, prior engineering experience, and live operational context available to AI while keeping those context types logically separate.
+
+The three context layers are:
+
+- **Knowledge** — durable engineering facts and source content extracted from repositories and verified sources.
+- **Memory** — decisions and prior engineering experience that should persist across AI sessions.
+- **Runtime** — live operational state such as Kubernetes workloads, Pods, status, and logs.
+
+The implementation order is intentionally incremental. The project must first prove the core path:
+
+```text
+GitHub
+  -> PostgreSQL
+  -> pgvector
+  -> Retrieval
+  -> General LLM
+  -> Grounded Engineering Answer
+```
+
+Only after this path is useful and measurable should the platform add graph traversal, Kubernetes runtime context, long-term memory, and agent orchestration.
 
 ## 2. Architecture Principles
 
-1. PostgreSQL is the durable source of truth for repositories, documents, chunks, metadata, indexing state, and simple memory records.
-2. pgvector is the semantic retrieval index. Embeddings must be rebuildable from canonical PostgreSQL content.
-3. Apache AGE stores graph entities and relationships that benefit from traversal; graph data must retain evidence back to canonical repository content.
-4. Knowledge, AI memory, and live runtime state are different context sources and must not be mixed into one lifecycle.
-5. Application services depend on Python ports/protocols rather than database-specific APIs.
-6. Deterministic parsers are preferred over LLM extraction for structured formats.
-7. FastAPI, Agent tools, and MCP reuse the same application services.
-8. Every grounded knowledge answer should retain repository, path, commit, and heading references.
-9. Runtime Kubernetes data is fetched live where practical instead of being treated as durable knowledge.
+1. PostgreSQL is the durable source of truth for repository content, chunks, metadata, indexing state, and later simple memory records.
+2. pgvector is a semantic retrieval projection and must be rebuildable from canonical content.
+3. Apache AGE is a graph projection and must be rebuildable from canonical content and retain evidence for every graph fact.
+4. Knowledge, Memory, and Runtime have different lifecycles and must remain logically separate.
+5. Runtime state is fetched live where practical rather than persisted as durable engineering knowledge.
+6. Application services depend on ports/protocols rather than PostgreSQL, AGE, Kubernetes, GitHub, or model SDKs directly.
+7. Deterministic parsers are preferred over LLM extraction for structured formats.
+8. Every grounded answer must preserve evidence such as repository, path, commit SHA, and heading/chunk identity.
+9. Indexing must be idempotent and support both incremental updates and full rebuilds.
+10. Graph extraction, Memory frameworks, and LangGraph are not prerequisites for the first usable RAG product.
 
 ## 3. Target Architecture
 
-```mermaid
-flowchart TB
-    U[User / AI Client] --> O[LangGraph Orchestrator / Context Builder]
-    O --> K[Knowledge Retriever]
-    O --> M[Memory Retriever]
-    O --> R[Runtime Retriever]
-
-    subgraph Knowledge Layer
-        GH[GitHub repositories] --> GS[Git sync / webhook]
-        GS --> SC[Repository scanner]
-        SC --> PC[Parser + chunker]
-        PC --> PG[(PostgreSQL)]
-        PC --> EM[Embedding provider]
-        EM --> PV[pgvector]
-        SC --> EX[Entity / relation extraction]
-        EX --> AGE[Apache AGE]
-        K --> PG
-        K --> PV
-        K --> AGE
-    end
-
-    subgraph Memory Layer
-        M --> MS[(PostgreSQL memory tables)]
-    end
-
-    subgraph Runtime Layer
-        R --> K8S[Kubernetes API]
-        K8S --> RT[Deployments / Pods / Logs]
-    end
-
-    O --> LLM[General LLM]
-```
-
-The three retrieval layers have different responsibilities:
-
-- **Knowledge Layer**: what the repositories and verified engineering sources say.
-- **Memory Layer**: what the AI/team previously decided or experienced across sessions.
-- **Runtime Layer**: what the deployed system is doing now.
-
-## 4. Initial Technology Stack
-
-| Area | Initial choice | Replaceable |
-| --- | --- | --- |
-| Language | Python 3.12+ | No |
-| HTTP API | FastAPI | Yes |
-| Validation | Pydantic | Yes |
-| Canonical database | PostgreSQL | Yes, behind ports |
-| Vector search | pgvector | Yes, behind `VectorStore` |
-| Graph | Apache AGE | Yes, behind `GraphStore` |
-| Embedding | Existing embedding model | Yes, behind `EmbeddingProvider` |
-| Generation / extraction | Existing general LLM | Yes, behind `LLMProvider` |
-| Agent orchestration | LangGraph | Yes |
-| Runtime integration | Kubernetes Python client | Yes |
-| Background work | Dramatiq or Celery | Yes |
-| Deployment | Docker and Kubernetes | Yes |
-| Metrics | Prometheus endpoint | Yes |
-| MCP | Python MCP SDK / FastMCP | Yes |
-
-The database deployment is intentionally consolidated: PostgreSQL provides relational/document metadata storage, pgvector provides vector search, and AGE provides graph capability.
-
-## 5. Repository Layout
-
 ```text
-ai-knowledge-base/
-├── apps/
-│   ├── api/
-│   ├── worker/
-│   ├── mcp_server/
-│   └── agent/
-├── src/knowledge_base/
-│   ├── domain/
-│   ├── application/
-│   │   ├── indexing_service.py
-│   │   ├── retrieval_service.py
-│   │   ├── graph_service.py
-│   │   ├── memory_service.py
-│   │   ├── runtime_service.py
-│   │   └── answer_service.py
-│   ├── ports/
-│   │   ├── document_store.py
-│   │   ├── vector_store.py
-│   │   ├── graph_store.py
-│   │   ├── memory_store.py
-│   │   ├── runtime_provider.py
-│   │   ├── embedding_provider.py
-│   │   ├── llm_provider.py
-│   │   └── source_repository.py
-│   └── adapters/
-│       ├── postgres/
-│       │   ├── document_store.py
-│       │   ├── vector_store.py
-│       │   ├── graph_store.py
-│       │   └── memory_store.py
-│       ├── kubernetes/
-│       ├── models/
-│       └── github/
-├── tests/
-├── deploy/
-├── docs/
-├── pyproject.toml
-└── README.md
+                         User / AI Client
+                                |
+                                v
+                         Context Builder
+                                |
+                 +--------------+--------------+
+                 |              |              |
+                 v              v              v
+            Knowledge        Memory         Runtime
+            Retriever        Retriever      Retriever
+                 |              |              |
+        +--------+--------+     |              v
+        |        |        |     |        Kubernetes API
+        v        v        v     |
+   PostgreSQL pgvector Apache   |
+                      AGE       |
+        |        |        |     |
+        +--------+--------+-----+
+                 |
+                 v
+            General LLM
 ```
 
-## 6. Core Ports
+The initial M0-M2 implementation uses the Knowledge path only. AGE becomes product-critical in M3, Kubernetes in M4, and Memory/LangGraph in M5.
 
-Keep the existing `EmbeddingProvider`, `LLMProvider`, `DocumentStore`, and `VectorStore` abstractions. Add two important boundaries:
+## 4. Technology Strategy
 
-### GraphStore
+| Area | Initial choice | Introduced |
+| --- | --- | --- |
+| Language | Python 3.12+ | M0 |
+| HTTP API | FastAPI | M0 |
+| Validation/config | Pydantic / pydantic-settings / PyYAML | M0 |
+| Canonical database | PostgreSQL | M0 |
+| Vector search | pgvector | M0-M2 |
+| Graph | Apache AGE | bootstrap M0, product use M3 |
+| Embedding | Existing embedding model behind `EmbeddingProvider` | M0-M1 |
+| Generation | Existing general LLM behind `LLMProvider` | M0-M2 |
+| Runtime integration | Kubernetes Python client | M4 |
+| Agent orchestration | LangGraph | M5 |
+| Memory | PostgreSQL behind `MemoryStore` | M5 |
+| Metrics | Prometheus | progressively |
+| MCP | Python MCP SDK / FastMCP | M5 |
+
+## 5. Configuration Contract
+
+All non-sensitive service configuration belongs in the central YAML configuration. Sensitive values belong only in `.env` or process environment variables.
+
+### `config/app.yml`
+
+```yaml
+app:
+  name: ai-knowledge-base
+
+database:
+  driver: postgresql+asyncpg
+  host: localhost
+  port: 5432
+  name: ai_knowledge_base
+  echo: false
+  pool_size: 10
+  max_overflow: 20
+  pool_pre_ping: true
+
+pgvector:
+  enabled: true
+
+age:
+  enabled: true
+  graph_name: ai_knowledge_graph
+
+embedding:
+  model_id: text-embedding-model
+  dimension: 1024
+  index_version: embedding-v1
+
+llm:
+  model_id: general-llm
+
+kubernetes:
+  runtime_enabled: false
+```
+
+### `.env`
+
+```env
+POSTGRES_USER=ai_kb_user
+POSTGRES_PASSWORD=change-me
+# GITHUB_TOKEN=
+# EMBEDDING_API_KEY=
+# GENERAL_LLM_API_KEY=
+```
+
+A full `DATABASE_URL` containing credentials is intentionally not stored. The application builds the DSN at startup from YAML configuration plus secrets. Future integrations must use this same central settings mechanism rather than introducing service-specific configuration loaders.
+
+M0 must also resolve two schema/config invariants: `embedding.dimension` must match the deployed pgvector schema/index dimension, and `age.graph_name` must match the AGE graph created by bootstrap/migrations.
+
+## 6. Core Domain and Ports
+
+Existing domain models:
+
+- `Repository`
+- `Document`
+- `Chunk`
+- `IndexJob`
+
+Existing storage boundaries:
+
+- `DocumentStore`
+- `VectorStore`
+- `GraphStore`
+- `MemoryStore`
+
+M0 must add explicit provider boundaries before ingestion begins:
 
 ```python
 from typing import Protocol, Sequence
 
-class GraphStore(Protocol):
-    async def upsert_entities(self, entities: Sequence[object]) -> None: ...
-    async def upsert_relations(self, relations: Sequence[object]) -> None: ...
-    async def neighbors(self, entity_id: str, relation_types: list[str] | None = None) -> list[object]: ...
-    async def traverse(self, start_id: str, max_depth: int = 3) -> list[object]: ...
+class EmbeddingProvider(Protocol):
+    async def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]: ...
+
+class LLMProvider(Protocol):
+    async def generate(self, prompt: str) -> str: ...
 ```
 
-### MemoryStore
-
-```python
-from typing import Protocol, Sequence
-
-class MemoryStore(Protocol):
-    async def add(self, memory: object) -> None: ...
-    async def search(self, query: str, limit: int = 10) -> Sequence[object]: ...
-    async def invalidate(self, memory_id: str) -> None: ...
-```
-
-These ports allow AGE or the memory implementation to evolve without coupling the agent to a database SDK.
+Additional boundaries are introduced only when required: `SourceRepository` in M1, `Reranker` in M2, and `RuntimeProvider` in M4. The LLM and future agent must never directly use database or Kubernetes clients.
 
 ## 7. PostgreSQL Data Model
 
-Initial relational tables:
+The initial canonical tables are `repositories`, `documents`, `chunks`, and `index_jobs`.
 
-### `repositories`
+`repositories` stores repository identity, enabled state, default branch, and last successfully indexed commit.
 
-- `id`
-- `owner`
-- `name`
-- `default_branch`
-- `last_indexed_commit`
-- `enabled`
-- `created_at`
-- `updated_at`
+`documents` stores canonical extracted content with repository ID, path, type, branch, commit SHA, content hash, raw text, metadata, indexing state, and deletion timestamp.
 
-### `documents`
+`chunks` stores retrieval units with document/repository IDs, chunk index, heading path, content, token count, content hash, commit SHA, embedding, embedding model/index version, metadata, and timestamps.
 
-- `id`
-- `repository_id`
-- `path`
-- `title`
-- `document_type`
-- `branch`
-- `commit_sha`
-- `content_hash`
-- `raw_text`
-- `metadata JSONB`
-- `index_status`
-- `created_at`
-- `updated_at`
-- `deleted_at`
+`index_jobs` records repository, target commit, status, processing counters, errors, and execution timestamps.
 
-### `chunks`
+A `memories` table is introduced in M5 with scope, memory type, content, metadata, validity period, and timestamps. Initial long-term memory should focus on decision and episodic memory rather than creating an uncontrolled duplicate of canonical Knowledge.
 
-- `id`
-- `document_id`
-- `repository_id`
-- `chunk_index`
-- `heading_path`
-- `content`
-- `token_count`
-- `content_hash`
-- `commit_sha`
-- `embedding vector(N)`
-- `embedding_model`
-- `embedding_index_version`
-- `metadata JSONB`
-- `created_at`
-- `updated_at`
+## 8. Indexing Consistency Model
 
-### `index_jobs`
+Canonical PostgreSQL rows are authoritative. Embeddings and graph facts are derived state.
 
-- `id`
-- `repository_id`
-- `commit_sha`
-- `status`
-- `files_scanned`
-- `documents_updated`
-- `chunks_created`
-- `error`
-- `started_at`
-- `finished_at`
-
-### `memories` (later phase)
-
-- `id`
-- `scope`
-- `memory_type` (`semantic`, `episodic`, `decision`)
-- `content`
-- `metadata JSONB`
-- `valid_from`
-- `valid_until`
-- `created_at`
-- `updated_at`
-
-Use pgvector indexes on chunk embeddings. Index selection (HNSW/IVFFlat) should be benchmarked using the project evaluation set instead of hard-coded prematurely.
-
-## 8. Apache AGE Graph Model
-
-Initial entity types:
-
-- Repository
-- Service
-- API
-- Database
-- Technology
-- Deployment
-- KubernetesWorkload
-- Document
-
-Initial relationships:
-
-- `CONTAINS`
-- `DEPENDS_ON`
-- `CALLS`
-- `USES`
-- `EXPOSES`
-- `DEPLOYED_BY`
-- `DESCRIBES`
-
-Each graph fact should retain evidence such as repository ID, path, commit SHA, parser/extractor version, and confidence when the relationship came from an LLM.
-
-Do not persist ephemeral Pod names as durable graph facts. Store stable workload identity such as cluster, namespace, Deployment/StatefulSet, and label selectors; resolve current Pods through the Kubernetes API at query time.
-
-## 9. Knowledge Extraction Flow
-
-```mermaid
-flowchart TD
-    A[GitHub webhook / sync / manual trigger] --> B[Create index job]
-    B --> C[Compare commit SHA]
-    C --> D[Download changed files]
-    D --> E[File router]
-    E --> F[Deterministic parsers]
-    E --> G[LLM semantic extractor when needed]
-    F --> H[Documents + chunks + metadata]
-    G --> H
-    H --> PG[(PostgreSQL)]
-    H --> I[Embedding provider]
-    I --> PV[pgvector]
-    F --> J[Entity / relation candidates]
-    G --> J
-    J --> N[Normalize + deduplicate + validate]
-    N --> AGE[Apache AGE]
-```
-
-Prefer deterministic parsing for Kubernetes YAML, Helm, OpenAPI, package manifests, Dockerfiles, and other structured formats. Use the LLM for README semantics, code intent, ambiguous relationships, summaries, and normalization assistance.
-
-## 10. Consistency Strategy
-
-PostgreSQL consolidation simplifies the previous MongoDB/external-vector consistency problem, but indexing must remain idempotent.
-
-Recommended state flow:
+M1 indexing state can remain simple:
 
 ```text
-pending -> parsed -> embedded -> graph_extracted -> indexed
-                     |                |
-                     +---- failed ----+
-                              |
-                            retry
+pending
+  -> parsing
+  -> persisted
+  -> embedding
+  -> indexed
+
+any stage -> failed -> retry
 ```
 
-Requirements:
+M3 graph extraction is a separate downstream projection and must not block successful M1 indexing.
 
-- canonical document/chunk rows are written before derived indexes are considered complete;
-- `content_hash` prevents unnecessary re-embedding;
-- stable chunk IDs allow safe upserts;
-- embedding/model versions are recorded;
-- graph facts retain evidence and extractor version;
-- incremental scans remove or invalidate facts whose source content was deleted;
-- monthly or operator-triggered full rebuild remains supported;
-- vector and graph projections can be reconstructed from canonical repository content.
+Required rules:
 
-## 11. Retrieval and Answer Flow
+- use `content_hash` to avoid unnecessary parsing and embedding;
+- preserve commit SHA on documents/chunks;
+- use stable chunk identity where possible;
+- record embedding model and index version;
+- invalidate deleted documents/chunks during incremental indexing;
+- update `last_indexed_commit` only after successful indexing;
+- support operator-triggered and later periodic full rebuilds;
+- keep vector and graph projections reconstructable from canonical content.
 
-```mermaid
-flowchart TD
-    A[User query] --> B[Intent + permission validation]
-    B --> C[Query embedding]
-    C --> D[pgvector Top-K]
-    D --> E[Rerank / metadata filter]
-    E --> F{Relationship context needed?}
-    F -->|No| H[Context builder]
-    F -->|Yes| G[AGE graph expansion]
-    G --> H
-    H --> I[Fetch canonical PostgreSQL content]
-    I --> J[General LLM]
-    J --> K[Answer with source references]
-```
+## 9. M0 — Foundation
 
-Graph traversal is query-dependent. A simple question such as "How do I run service X locally?" may only need vector retrieval. Questions such as "Which services depend on X and where are they deployed?" can use AGE for multi-hop traversal.
+### Objective
 
-## 12. Runtime Layer
+Make the current foundation truly runnable and verifiable against an externally supplied PostgreSQL environment.
 
-Runtime retrieval is implemented as explicit tools, for example:
+### Already implemented
+
+- Python project/package structure;
+- central YAML + secret environment configuration;
+- async SQLAlchemy lifecycle;
+- Repository/Document/Chunk/IndexJob models;
+- initial PostgreSQL bootstrap/schema SQL;
+- pgvector embedding column and HNSW index;
+- AGE extension/graph bootstrap SQL;
+- DocumentStore/VectorStore/GraphStore/MemoryStore boundaries;
+- PostgreSQL DocumentStore adapter;
+- pgvector VectorStore adapter;
+- initial unit-test scaffolding.
+
+### Remaining tasks
+
+- [ ] Define `EmbeddingProvider` and `LLMProvider` ports.
+- [ ] Make config path resolution robust and protect secret values from accidental logging.
+- [ ] Establish the migration strategy.
+- [ ] Reconcile configured embedding dimension with pgvector schema/index dimension.
+- [ ] Reconcile configured AGE graph name with bootstrap/migrations.
+- [ ] Validate PostgreSQL, `vector`, `age`, and configured graph during readiness.
+- [ ] Add FastAPI `/health/live` and `/health/ready`.
+- [ ] Add PostgreSQL integration test.
+- [ ] Add pgvector insert/search integration test and vector dimension validation.
+- [ ] Add AGE bootstrap/query integration test.
+- [ ] Expand DocumentStore write/update boundaries required by ingestion.
+- [ ] Define indexing transaction semantics.
+
+### Acceptance
+
+Given valid external database configuration and credentials, the application starts, reports liveness, verifies PostgreSQL/pgvector/AGE readiness, verifies the configured AGE graph, and completes a real vector insert/search integration test. Configuration/schema mismatches must fail clearly.
+
+## 10. M1 — Knowledge Ingestion MVP
+
+### Objective
+
+Build the first end-to-end repository ingestion path. Limit initial parsing to Markdown and text so ingestion and incremental semantics are proven before language-specific AST and infrastructure extraction.
+
+### Flow
 
 ```text
-resolve_repo_workload(repo)
-get_deployments(cluster, namespace)
-get_pods(cluster, namespace, selector)
-get_pod_logs(cluster, namespace, pod, container?, since?)
+GitHub Repository
+  -> Repository Registration
+  -> Git Fetch / Sync
+  -> File Scanner
+  -> Markdown / Text Parser
+  -> Chunker
+  -> PostgreSQL
+  -> EmbeddingProvider
+  -> pgvector
 ```
 
-Flow:
+### Initial API
 
 ```text
-repository
-  -> PostgreSQL / AGE stable workload mapping
-  -> cluster + namespace + workload + selector
-  -> Kubernetes API
-  -> current Pods / status / logs
+POST /v1/repositories
+GET  /v1/repositories
+POST /v1/repositories/{repository_id}/index
+GET  /v1/index-jobs/{job_id}
+```
+
+Webhook support is added after manual indexing is reliable.
+
+### Full indexing
+
+1. Resolve branch and target commit.
+2. Enumerate eligible Markdown/text files.
+3. Parse and create/update canonical Document rows.
+4. Chunk parsed text and persist canonical Chunk rows.
+5. Embed changed/new chunks in batches.
+6. Persist vectors and embedding version.
+7. Mark IndexJob successful.
+8. Advance `last_indexed_commit`.
+
+### Incremental indexing
+
+```text
+commit A indexed
+       |
+       v
+compare A..B
+       |
+       +-> added
+       +-> modified
+       +-> deleted
+       |
+       v
+parse/re-chunk changed files only
+       |
+       v
+content_hash comparison
+       |
+       +-> unchanged: skip embedding
+       +-> changed: embed/update
+       +-> removed: invalidate/delete
+```
+
+A failed job must not advance `last_indexed_commit`.
+
+### Chunking v1
+
+Use Markdown headings as semantic boundaries where possible, retain `heading_path`, split oversized sections by paragraph/token limit, and store path/commit metadata on every chunk. Cross-chunk questions are handled later by retrieving multiple relevant/neighboring chunks and combining them in the Context Builder.
+
+### Tasks
+
+- [ ] Implement repository registration and GitHub/git source adapter.
+- [ ] Implement manual full indexing and commit comparison.
+- [ ] Implement eligible-file scanner.
+- [ ] Implement Markdown and plain-text parsers.
+- [ ] Implement chunker and metadata builder.
+- [ ] Implement Document/Chunk write/upsert operations.
+- [ ] Implement batch embedding and embedding version persistence.
+- [ ] Implement content-hash skip logic.
+- [ ] Implement deleted-file/chunk invalidation.
+- [ ] Implement IndexJob status/counters/errors and retry semantics.
+- [ ] Implement full rebuild operation.
+- [ ] Add full/incremental indexing tests.
+
+### Acceptance
+
+The initial test repositories can be registered and indexed end-to-end. Full and incremental scans work, deleted content disappears from retrieval state, and unchanged chunks are not embedded again.
+
+## 11. M2 — Search and RAG MVP
+
+### Objective
+
+Turn indexed repository content into measurable, grounded engineering answers.
+
+### Flow
+
+```text
+Question
+  -> Query Embedding
+  -> pgvector Top-K
+  -> Repository / Metadata Filter
+  -> Reranker
+  -> Canonical Chunk Fetch
   -> Context Builder
+  -> General LLM
+  -> Answer + Evidence
 ```
 
-Use a dedicated Kubernetes ServiceAccount with least-privilege RBAC. Dex is not required for the initial service identity. User-aware OIDC/RBAC can be introduced later if runtime authorization must differ by user.
+AGE is not required in the M2 critical path.
 
-## 13. Memory Layer
-
-The first memory implementation should remain intentionally simple and use PostgreSQL behind `MemoryStore`.
-
-Memory categories:
-
-- semantic memory: durable learned/confirmed facts;
-- episodic memory: prior troubleshooting or work sessions;
-- decision memory: architecture and implementation decisions;
-- working/session state remains in the orchestrator rather than being promoted automatically to long-term memory.
-
-A specialized framework such as Graphiti/Zep or Mem0 can be evaluated later when temporal fact invalidation, memory consolidation, or high-volume cross-session retrieval becomes necessary.
-
-## 14. Configuration
-
-```env
-DATABASE_URL=postgresql+asyncpg://user:password@postgres:5432/ai_knowledge_base
-
-PGVECTOR_ENABLED=true
-EMBEDDING_MODEL_ID=text-embedding-model
-EMBEDDING_DIMENSION=1024
-EMBEDDING_INDEX_VERSION=embedding-v1
-
-AGE_ENABLED=true
-AGE_GRAPH_NAME=ai_knowledge_graph
-
-GENERAL_LLM_MODEL_ID=general-llm
-
-KUBERNETES_RUNTIME_ENABLED=false
-```
-
-The embedding dimension is configuration. A model migration must be versioned and should build a new index before retiring the old one.
-
-## 15. API / MCP / Agent Boundaries
-
-FastAPI endpoints can retain the retrieval/answer split:
+### API
 
 ```text
 POST /v1/search
 POST /v1/answer
 GET  /v1/documents/{document_id}
-GET  /v1/repositories
-POST /v1/repositories/{repository_id}/index
-GET  /v1/index-jobs/{job_id}
-POST /internal/github/webhook
-GET  /health/live
-GET  /health/ready
-GET  /metrics
 ```
 
-Later MCP/Agent tools:
+Evidence should include repository identity, path, commit SHA, heading path, and chunk identity.
+
+The answer service must use retrieved/authorized evidence as factual context, preserve source references, avoid unsupported repository claims, and communicate when evidence is insufficient.
+
+Define a `Reranker` boundary even if the first implementation is simple.
+
+### Evaluation
+
+Create roughly 30-50 manually curated engineering questions from the initial repositories. Each question defines expected evidence, not only expected prose.
+
+Track Recall@5, Recall@10, MRR, irrelevant chunk rate, citation correctness, faithfulness, unsupported-claim rate, and latency.
+
+### Tasks
+
+- [ ] Implement query embedding and repository/metadata filters.
+- [ ] Add authorization-filter boundary.
+- [ ] Implement Reranker port and initial adapter.
+- [ ] Fetch canonical chunks after vector retrieval.
+- [ ] Implement Context Builder.
+- [ ] Implement grounded answer service.
+- [ ] Return repo/path/commit evidence.
+- [ ] Implement insufficient-evidence behavior.
+- [ ] Build evaluation dataset and benchmark harness.
+- [ ] Establish retrieval and answer-quality baseline.
+
+### Acceptance
+
+Known engineering questions retrieve expected evidence and generated answers contain traceable repository references. A reproducible retrieval baseline exists.
+
+M2 is the first complete product MVP: **GitHub -> Knowledge -> AI Answer**.
+
+## 12. M3 — Engineering Knowledge Graph
+
+### Objective
+
+Add relationship-aware engineering knowledge after M2 proves the core retrieval product.
+
+Graph extraction remains downstream from canonical ingestion:
 
 ```text
-kb_search
-kb_fetch
-graph_neighbors
-graph_traverse
-memory_search
-get_repo_runtime
-get_pods
-get_pod_logs
+PostgreSQL Canonical Knowledge
+        -> Graph Extraction
+        -> Normalize / Validate / Deduplicate
+        -> Apache AGE
 ```
 
-LangGraph is the planned orchestrator for choosing between Knowledge, Memory, and Runtime tools. Tool implementations call application services; the LLM/agent must not access PostgreSQL, AGE, or Kubernetes clients directly.
+### Initial model
 
-## 16. Delivery Phases
+Entities: Repository, Service, API, Database, Deployment, Technology.
 
-### Phase 0: PostgreSQL Foundation
+Relationships: `CONTAINS`, `DEPENDS_ON`, `CALLS`, `USES`, `EXPOSES`, `DEPLOYED_BY`.
 
-- initialize Python project and ports;
-- configure PostgreSQL lifecycle and migrations;
-- enable pgvector and AGE in the target PostgreSQL environment;
-- implement PostgreSQL `DocumentStore`;
-- implement pgvector `VectorStore`;
-- add fake model/store adapters and unit tests.
+Start with deterministic extractors for `pom.xml`, `requirements.txt`, `package.json`, Dockerfile, Kubernetes YAML, Helm, and OpenAPI. Use the general LLM only for semantic relationships that deterministic parsers cannot reliably infer.
 
-Acceptance: application services work through ports and one PostgreSQL platform can provide canonical storage plus vector capability.
+Every graph fact retains repository ID, path, commit SHA, extractor/version, and confidence for LLM-derived facts.
 
-### Phase 1: Indexing MVP
+Graph expansion is query-dependent. Simple semantic questions should not pay graph traversal cost by default.
 
-- GitHub repository synchronization;
-- incremental commit comparison;
-- Markdown/text/source/config parsing;
-- chunking and metadata;
-- PostgreSQL persistence;
-- embedding batch calls;
-- pgvector indexing;
-- retryable index jobs.
+### Tasks
 
-Acceptance: repositories can be indexed end-to-end and unchanged chunks are not embedded again.
+- [ ] Finalize minimal graph schema from real evaluation questions.
+- [ ] Implement AGE adapter.
+- [ ] Implement deterministic extractors.
+- [ ] Implement entity normalization/canonicalization.
+- [ ] Implement evidence-backed upsert and source-change invalidation.
+- [ ] Add optional LLM semantic extraction.
+- [ ] Implement entity resolution and bounded traversal.
+- [ ] Integrate graph expansion into Context Builder.
+- [ ] Add multi-hop evaluation questions.
 
-### Phase 2: Retrieval MVP
+### Acceptance
 
-- query embedding;
-- pgvector Top-K retrieval;
-- metadata/repository/authorization filters;
-- reranking hook;
-- canonical PostgreSQL fetch;
-- retrieval evaluation dataset.
+Relationship-heavy questions about dependencies, databases, APIs, and deployments can use bounded multi-hop traversal, and every graph fact is traceable to repository evidence.
 
-Acceptance: known questions retrieve expected evidence in Top 5 and stale/unauthorized chunks are excluded.
+## 13. M4 — Runtime Context
 
-### Phase 3: RAG Answer
+### Objective
 
-- context builder;
-- grounded prompt;
-- LLM generation;
-- answer citations;
-- evidence-missing refusal behavior;
-- latency/token metrics.
+Connect durable repository knowledge to current Kubernetes state without turning ephemeral runtime objects into long-term knowledge.
 
-### Phase 4: Knowledge Graph
-
-- finalize entity/relation schema;
-- implement deterministic entity extraction from structured files;
-- add LLM relation extraction for semantic sources;
-- normalize/canonicalize entities;
-- implement AGE adapter and evidence-backed upserts;
-- add graph traversal to retrieval when intent requires it.
-
-Acceptance: relationship-heavy test questions can traverse repository -> service -> dependency/deployment relationships with traceable evidence.
-
-### Phase 5: Production Readiness
-
-- background workers;
-- webhook verification;
-- PostgreSQL/pgvector/AGE health checks;
-- retry/dead-letter handling;
-- Prometheus metrics/alerts;
-- Docker/Kubernetes manifests;
-- backup, restore, vector rebuild, and graph rebuild procedures.
-
-### Phase 6: Runtime Kubernetes Context
-
-- implement stable repo-to-workload mapping;
-- Kubernetes ServiceAccount + least-privilege RBAC;
-- workload/Pod/status/log tools;
-- runtime authorization and audit logging;
-- separate live runtime evidence from durable KB content.
-
-### Phase 7: Memory
-
-- implement `MemoryStore` on PostgreSQL;
-- decision and episodic memory;
-- cross-session retrieval;
-- explicit promotion/invalidation rules;
-- evaluate Graphiti/Zep or Mem0 only when requirements justify them.
-
-### Phase 8: MCP / Agent
-
-- expose knowledge, graph, memory, and runtime services as bounded tools;
-- use LangGraph for orchestration;
-- add session state, guardrails, tracing, authorization, and approval boundaries.
-
-## 17. Metrics and Evaluation
-
-### Indexing
-
-- job success rate;
-- commit-to-searchable latency;
-- files/chunks processed per minute;
-- embedding latency/failure rate;
-- unchanged chunks skipped;
-- graph extraction success/error rate.
-
-### Retrieval
-
-- Recall@5 / Recall@10;
-- mean reciprocal rank;
-- irrelevant chunk rate;
-- P50/P95 latency;
-- graph traversal usefulness and latency.
-
-### Answer Quality
-
-- citation correctness;
-- faithfulness;
-- refusal accuracy;
-- answer latency/token usage.
-
-### Runtime
-
-- Kubernetes API latency/error rate;
-- authorization denials;
-- Pod/log tool success rate;
-- freshness of runtime evidence.
-
-### Memory / Agent
-
-- relevant memory recall rate;
-- stale memory rate;
-- tool selection accuracy;
-- task completion rate;
-- average tool calls;
-- invalid loop/authorization violation rate.
-
-## 18. Immediate Next Steps
-
-1. Add PostgreSQL, pgvector, and AGE configuration/migration strategy.
-2. Replace the MongoDB adapter with PostgreSQL `DocumentStore`.
-3. Make pgvector the concrete `VectorStore` implementation.
-4. Add `GraphStore` and AGE adapter interfaces without forcing graph traversal into every query.
-5. Keep repository scanning/chunking independent from persistence SDKs.
-6. Index a small repository set and build a retrieval evaluation dataset.
-7. Add graph extraction only after vector retrieval is stable.
-8. Add Kubernetes runtime tools after stable repo-to-workload identity is available.
-9. Add PostgreSQL-backed memory after the core Knowledge Layer is stable.
-
-The core dependency direction remains:
+Persist stable mapping only:
 
 ```text
-FastAPI / MCP / LangGraph Agent
-            |
-            v
-     Application Services
-            |
-   +--------+---------+----------------+
-   |        |         |                |
-Document  Vector    Graph           Runtime
- Store     Store     Store           Provider
-   |        |         |                |
-   +--------+---------+                v
-            |                    Kubernetes API
-            v
- PostgreSQL + pgvector + AGE
+repository
+  -> cluster
+  -> namespace
+  -> Deployment / StatefulSet
+  -> label selector
 ```
+
+Current Pod names are resolved through Kubernetes API at query time.
+
+### Runtime flow
+
+```text
+Repository or Service
+  -> Stable Workload Mapping
+  -> Kubernetes API
+  -> Current Workload / Pods
+  -> Status / Logs
+  -> Runtime Evidence
+  -> Context Builder
+```
+
+Potential bounded operations include `resolve_repo_workload`, `get_workload`, `get_pods`, and `get_pod_logs`.
+
+The backend uses a dedicated ServiceAccount with least-privilege RBAC. Dex is not required for initial service identity. Runtime tools require authorization checks, audit logs, timeouts, log-size limits, and explicit cluster/namespace scoping.
+
+### Tasks
+
+- [ ] Define `RuntimeProvider` and stable workload mapping model.
+- [ ] Implement Kubernetes client adapter.
+- [ ] Implement ServiceAccount/RBAC deployment configuration.
+- [ ] Implement workload and Pod lookup.
+- [ ] Implement bounded Pod log retrieval.
+- [ ] Add runtime authorization and audit logging.
+- [ ] Add timeout/payload guardrails.
+- [ ] Integrate Runtime evidence into Context Builder.
+- [ ] Add runtime troubleshooting tests.
+
+### Acceptance
+
+Given an authorized repository/service, the system resolves its stable Kubernetes workload and retrieves current status, Pods, and logs without persisting ephemeral Pod identity as durable knowledge.
+
+## 14. M5 — Memory and Agent Platform
+
+### Objective
+
+Combine Knowledge, Memory, and Runtime through one orchestrated context layer after each source is independently useful and testable.
+
+### Memory v1
+
+Use PostgreSQL behind `MemoryStore`, initially focusing on:
+
+- **Decision memory** — architecture/implementation decisions;
+- **Episodic memory** — prior troubleshooting/work episodes.
+
+Memory is not automatically canonical Knowledge. Promotion from experience into verified engineering knowledge must be explicit or verified.
+
+Define creation, scope, retrieval, validity/invalidation, consolidation, and promotion rules. Graphiti/Zep or Mem0 remain optional future implementations if PostgreSQL-backed memory becomes insufficient.
+
+### LangGraph
+
+LangGraph is introduced in M5 to decide whether a request needs Knowledge, Memory, Runtime, or a combination:
+
+```text
+Question
+  -> LangGraph
+       -> Knowledge Retriever
+       -> Memory Retriever
+       -> Runtime Retriever
+  -> Context Builder
+  -> General LLM
+```
+
+Potential bounded MCP/Agent tools include `kb_search`, `kb_fetch`, `graph_neighbors`, `graph_traverse`, `memory_search`, `get_repo_runtime`, `get_pods`, and `get_pod_logs`. Raw database and Kubernetes clients are never exposed directly to the model.
+
+### Tasks
+
+- [ ] Implement PostgreSQL MemoryStore adapter.
+- [ ] Implement decision and episodic memory.
+- [ ] Define memory scope/invalidation and promotion workflow.
+- [ ] Implement cross-session memory retrieval.
+- [ ] Add LangGraph orchestration.
+- [ ] Expose bounded Knowledge/Graph/Memory/Runtime tools.
+- [ ] Add MCP/FastMCP adapter when required.
+- [ ] Add authorization/approval boundaries, tracing, and metrics.
+- [ ] Add tool-selection evaluation.
+
+### Acceptance
+
+A new AI session can retrieve important prior decisions/episodes and combine them with repository knowledge and, when necessary, current Kubernetes evidence. Tool use is bounded, authorized, and traceable.
+
+## 15. Testing and Evaluation Strategy
+
+Unit tests cover configuration/secret separation, validation, chunking, content hashes, repository filters, ordering, provider/store errors, graph normalization, and memory lifecycle rules.
+
+Integration tests cover PostgreSQL/schema bootstrap, pgvector insert/search, AGE availability/traversal, full/incremental indexing, deleted-file invalidation, GitHub source access, and Kubernetes runtime access when M4 begins.
+
+Maintain a versioned retrieval evaluation dataset with question, target scope, expected evidence, optional expected entities/relations, and acceptable alternatives. Use results to tune chunk size, overlap, Top-K, reranking, vector indexing, and graph expansion rather than hard-coding those choices without measurement.
+
+## 16. Operational Requirements
+
+Production readiness is added continuously to the milestone introducing each capability rather than postponed into a separate phase.
+
+Required capabilities over time include structured logging, Prometheus metrics, health/readiness endpoints, retry/failure visibility, bounded concurrency, GitHub webhook verification, database backup/restore, vector rebuild, graph rebuild, Kubernetes audit logs, and Docker/Kubernetes deployment configuration.
+
+The application does not provision PostgreSQL itself. Database infrastructure and credentials are supplied externally.
+
+## 17. Explicit Non-Goals Before M2 Completion
+
+Do not make the following dependencies of the core MVP before M2 is complete:
+
+- image/VLM ingestion;
+- Java/Python AST-wide extraction;
+- comprehensive Helm/Kubernetes semantic graph extraction;
+- AGE traversal in every query;
+- Graphiti/Zep/Mem0;
+- LangGraph orchestration;
+- Kubernetes runtime access;
+- MCP as the only application interface;
+- MinIO/object storage.
+
+MinIO becomes useful later for PDFs, images, diagrams, screenshots, audio, large attachments, repository snapshots, build artifacts, or archived logs. Current textual engineering knowledge remains in PostgreSQL.
+
+## 18. Milestone Summary
+
+| Milestone | Outcome | Completion signal |
+| --- | --- | --- |
+| **M0 Foundation** | PostgreSQL + pgvector + AGE foundation is runnable | real DB readiness + vector/AGE integration tests |
+| **M1 Knowledge Ingestion MVP** | GitHub -> Markdown/Text -> Chunk -> pgvector | full + incremental indexing works on initial repos |
+| **M2 Search and RAG MVP** | Question -> Retrieval -> LLM -> Evidence | grounded answers + reproducible retrieval baseline |
+| **M3 Engineering Knowledge Graph** | AGE-backed multi-hop engineering relationships | traceable multi-hop answers |
+| **M4 Runtime Context** | Repo/service -> K8s workload -> live status/logs | live runtime troubleshooting evidence |
+| **M5 Memory and Agent Platform** | Knowledge + Memory + Runtime orchestration | cross-session memory + bounded LangGraph tools |
+
+## 19. Immediate Next Work
+
+The project is currently in **M0 Foundation**. The next implementation sequence is:
+
+1. add `EmbeddingProvider` and `LLMProvider` ports;
+2. resolve embedding-dimension/schema and AGE graph-name configuration invariants;
+3. establish the migration strategy;
+4. implement PostgreSQL/pgvector/AGE readiness validation;
+5. expose `/health/live` and `/health/ready`;
+6. add PostgreSQL, pgvector, and AGE integration tests;
+7. expand DocumentStore/write transaction boundaries required by M1;
+8. complete M0 acceptance criteria before beginning the M1 GitHub ingestion pipeline.
